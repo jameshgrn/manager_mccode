@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "manager-mccode"
+version = "0.1.0"
+description = "Screen activity summarization using Gemini Vision API"
+authors = ["Jake Gearon <jake.gearon@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+python-dotenv = "^1.0.0"
+pillow = "^10.2.0"  # for screenshot handling
+google-generativeai = "^0.3.0"
+pyautogui = "^0.9.54"  # for screenshots
+pydantic = "^2.6.0"  # for structured output
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
