@@ -1,4 +1,58 @@
-.env
+# Database
+*.db
 
-.history/
+# Screenshots
+temp_screenshots/
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
 .whisper/
+.history/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+screen_summaries.db
+daily_summary_*.txt
+temp_screenshots/
+*.log
+
+# Manager McCode specific
+screen_summaries.db
+daily_summary_*.txt
+temp_screenshots/
+logs/
