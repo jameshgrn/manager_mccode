@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
     TEMP_DIR: Path = BASE_DIR / "temp_screenshots"
     LOG_DIR: Path = BASE_DIR / "logs"
+    DEFAULT_DB_PATH: Path = BASE_DIR / "manager_mccode.db"
     
     # Web Configuration
     WEB_PORT: int = 8000
