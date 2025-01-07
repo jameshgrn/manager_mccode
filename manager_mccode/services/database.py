@@ -233,7 +233,7 @@ class DatabaseManager:
         """Initialize the database and run migrations"""
         try:
             logger.info(f"Connecting to database at path: {self.db_path}")
-            
+
             # Only create directories if not using in-memory database
             if self.db_path != ":memory:":
                 db_path = Path(self.db_path)
@@ -251,20 +251,23 @@ class DatabaseManager:
             self.conn.execute("PRAGMA synchronous = NORMAL")
             # Enable memory-mapped I/O for better performance
             self.conn.execute("PRAGMA mmap_size = 30000000000")
-            
+
             logger.info("Successfully connected to SQLite.")
-            
+
             # Run migrations in a transaction
             self.conn.execute("BEGIN TRANSACTION")
             try:
                 self._run_migrations()
-                self._optimize_database()
                 self.conn.commit()
+                logger.info("Migrations complete")
+                
+                # Run optimizations after the transaction is committed
+                self._optimize_database()
                 logger.info("Database initialization complete")
             except Exception as e:
                 self.conn.rollback()
                 raise e
-            
+
         except Exception as e:
             logger.error(f"Database initialization failed: {e}", exc_info=True)
             raise DatabaseError(f"Initialization failed: {e}")
