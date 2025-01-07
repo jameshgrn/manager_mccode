@@ -15,7 +15,7 @@ Manager McCode serves as your attentive productivity assistant, designed specifi
 
 - **Intelligent Activity Tracking**: Takes periodic screenshots and uses Gemini 1.5 Vision API to analyze work patterns
 - **ADHD-Aware Analysis**: Recognizes context switching, focus states, and task transitions
-- **Privacy-First**: All data stays local in DuckDB, with configurable retention
+- **Privacy-First**: All data stays local in SQLite, with configurable retention
 - **Real-Time Insights**: Shows 15-minute activity summaries in your terminal
 - **Daily Reports**: Generates end-of-day summaries of productivity patterns
 
@@ -37,52 +37,51 @@ cp .env.example .env
 
 Start tracking:
 ```bash
-poetry run python -m manager_mccode
+poetry run mccode start
 ```
 
 View recent activity:
 ```bash
-poetry run python -m manager_mccode inspect
+poetry run mccode inspect
 ```
 
 Install as system service:
 ```bash
-poetry run python -m manager_mccode install
+poetry run mccode install
 ```
 
 ## Architecture
 
-- **Core Services**:
-  - `ImageManager`: Screenshot capture and optimization
-  - `GeminiAnalyzer`: AI-powered activity analysis
-  - `BatchProcessor`: Efficient batch processing of screenshots
-  - `DatabaseManager`: Local data storage with DuckDB
-  - `TerminalDisplay`: Real-time activity visualization
+### Core Services
+- **ImageManager**: Screenshot capture and optimization
+- **BatchProcessor**: Efficient batch processing with Gemini Vision
+- **GeminiAnalyzer**: AI-powered activity analysis
+- **TaskDetector**: Context and focus state detection
+- **DatabaseManager**: Local data persistence
+- **MetricsCollector**: Focus and productivity analytics
+- **TerminalDisplay**: Real-time activity visualization
 
-## Roadmap
-
-- [ ] Web interface for activity insights
-- [ ] Task detection and workflow analysis
-- [ ] Focus metrics and productivity patterns
-- [ ] Integration with task management tools
-- [ ] Customizable attention state detection
-- [ ] Export and visualization options
+### Data Models
+- **ScreenSummary**: Activity snapshots and analysis
+- **FocusSession**: Focus state tracking
+- **Activity**: Task and application tracking
+- **Context**: Work environment analysis
 
 ## Improvement Checklist
 
-### 1. Core Service Stability ✅
+### 1. Core Service Stability 🚧
 - [x] Add graceful shutdown handling in `ServiceRunner`
 - [x] Implement proper error recovery in batch processing
-- [x] Add health check endpoints for service monitoring
+- [ ] Add health check endpoints for service monitoring
 - [x] Implement proper cleanup of temporary files
-- [x] Add service state persistence across restarts
+- [ ] Add service state persistence across restarts
 
-### 2. Configuration Management ✅
-- [x] Consolidate settings between `config.py` and `settings.py`
+### 2. Configuration Management 🚧
+- [ ] Consolidate settings between `config.py` and `settings.py`
 - [x] Add configuration validation for all settings
-- [x] Implement environment-specific configs (dev/prod)
-- [x] Add dynamic config reloading
-- [x] Document all configuration options
+- [ ] Implement environment-specific configs (dev/prod)
+- [ ] Add dynamic config reloading
+- [ ] Document all configuration options
 
 ### 3. Performance Optimization ✅
 - [x] Implement screenshot compression optimization
@@ -95,61 +94,94 @@ poetry run python -m manager_mccode install
 - [x] Add caching for frequently accessed data
 - [x] Implement resource usage monitoring
 
-### 4. Data Management
+### 4. Data Management 🚧
 - [ ] Add data export functionality
-- [ ] Implement data retention policies
+- [x] Implement data retention policies
 - [ ] Add database backup/restore functionality
 - [ ] Implement data migration tools
 - [ ] Add data anonymization options
 
-### 5. Error Handling & Logging
-- [ ] Improve error classification and handling
-- [ ] Add structured logging
+### 5. Error Handling & Logging 🚧
+- [x] Improve error classification and handling
+- [x] Add structured logging
 - [ ] Implement log rotation
 - [ ] Add error reporting metrics
 - [ ] Implement debug mode logging
 
-### 6. Security
-- [ ] Add screenshot data encryption
-- [ ] Implement secure configuration storage
-- [ ] Add access control for web interface
-- [ ] Implement API authentication
-- [ ] Add security audit logging
-
-### 7. User Experience 🚧
-- [ ] Add real-time activity feedback
-- [ ] Implement customizable focus metrics
+### 6. User Experience 🚧
+- [x] Add real-time activity feedback
+- [x] Implement customizable focus metrics
 - [ ] Add detailed activity reports
 - [ ] Improve notification system
 - [ ] Add user preferences management
 
-### 8. Testing & Quality
+### 7. Testing & Quality 🚧
+- [x] Add integration tests for core services
 - [ ] Add integration tests for web interface
 - [ ] Implement performance benchmarks
 - [ ] Add stress testing scenarios
-- [ ] Improve test coverage
-- [ ] Add property-based testing
+- [x] Add property-based testing
 
-### 9. Documentation
+### 8. Documentation 📝
 - [ ] Add API documentation
 - [ ] Create user guide
 - [ ] Add configuration reference
 - [ ] Document troubleshooting steps
 - [ ] Add development setup guide
 
-### 10. Feature Implementation
+### 9. Feature Implementation 🚧
 - [ ] Complete web interface implementation
-- [ ] Add focus session analytics
-- [ ] Implement task categorization
-- [ ] Add productivity metrics
+- [x] Add focus session analytics
+- [x] Implement task categorization
+- [x] Add productivity metrics
 - [ ] Implement report generation
 
-### 11. System Integration
-- [ ] Add systemd service management
-- [ ] Implement macOS service integration
+### 10. System Integration ✅
+- [x] Add systemd service management
+- [x] Implement macOS service integration
 - [ ] Add Docker support
 - [ ] Implement CI/CD pipeline
 - [ ] Add monitoring integration
+
+## Project Structure
+```
+manager_mccode/
+├── cli/            # Command-line interface
+├── config/         # Configuration management
+├── models/         # Data models
+├── services/       # Core business logic
+│   ├── analyzer.py   # Gemini Vision integration
+│   ├── batch.py      # Batch processing
+│   ├── database.py   # Data persistence
+│   ├── display.py    # Terminal UI
+│   ├── image.py      # Screenshot management
+│   ├── metrics.py    # Analytics
+│   ├── runner.py     # Service lifecycle
+│   └── task_detector.py  # Context detection
+└── web/            # Web interface
+```
+
+## Configuration
+
+Key settings in `.env`:
+```bash
+GEMINI_API_KEY=your_api_key_here
+SCREENSHOT_INTERVAL_SECONDS=10
+DEFAULT_BATCH_SIZE=12
+DEFAULT_BATCH_INTERVAL_SECONDS=120
+```
+
+## Development
+
+1. Set up development environment:
+```bash
+poetry install --with dev
+```
+
+2. Run tests:
+```bash
+poetry run pytest
+```
 
 ## Contributing
 
@@ -158,67 +190,4 @@ Contributions welcome! Please check out our [contributing guidelines](CONTRIBUTI
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details
-
-## Configuration
-
-Key settings in `.env`:
-```bash
-GEMINI_API_KEY=your_api_key_here
-SCREENSHOT_INTERVAL_SECONDS=10  # Default screenshot interval
-DEFAULT_BATCH_SIZE=12          # Number of screenshots to process together
-DEFAULT_BATCH_INTERVAL_SECONDS=120  # How often to run batch processing
-```
-
-## Development Setup
-
-1. Set up development environment:
-```bash
-poetry install --with dev
-pre-commit install
-```
-
-2. Run tests:
-```bash
-poetry run pytest
-```
-
-3. Format code:
-```bash
-poetry run black .
-poetry run isort .
-```
-
-## Project Structure
-
-```
-manager_mccode/
-├── cli/            # Command-line interface tools
-├── config/         # Configuration management
-├── models/         # Data models and schemas
-├── services/       # Core service modules
-│   ├── analyzer.py   # Gemini Vision integration
-│   ├── batch.py      # Batch processing
-│   ├── database.py   # Data persistence
-│   ├── display.py    # Terminal UI
-│   └── image.py      # Screenshot management
-├── web/            # Web interface (planned)
-└── main.py         # Application entry point
-```
-
-## Recent Updates
-
-### v0.1.2
-- Implemented optimized screenshot compression
-  - Reduced memory usage and storage requirements
-  - Added configurable quality settings
-  - Improved concurrent capture handling
-- Added comprehensive test coverage for image processing
-- Enhanced error handling and recovery
-- Improved cleanup procedures
-
-### v0.1.1
-- Implemented robust service runner with graceful shutdown
-- Consolidated configuration system using Pydantic V2
-- Added comprehensive error handling and recovery
-- Improved logging and cleanup procedures
 

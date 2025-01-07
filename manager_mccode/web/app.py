@@ -19,9 +19,9 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 # Initialize services
-settings = Settings()
-db = DatabaseManager(settings.DEFAULT_DB_PATH)
-db.initialize()  # Ensure tables exist
+settings = Settings()  # Let it load naturally from .env
+db = DatabaseManager()
+db.initialize()
 metrics = MetricsCollector(db)
 
 class APIError(WebError):

@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application settings with validation"""
     
     # API Configuration
-    GEMINI_API_KEY: str
+    GEMINI_API_KEY: Optional[str] = None
     GEMINI_MODEL_NAME: str = "gemini-1.5-flash"
     
     # Service Configuration
