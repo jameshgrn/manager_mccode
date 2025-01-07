@@ -342,7 +342,12 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
+            # Update the query to use relative time from the latest record
             cursor.execute("""
+                WITH latest_time AS (
+                    SELECT MAX(timestamp) as max_time 
+                    FROM activity_snapshots
+                )
                 SELECT 
                     a.timestamp,
                     a.summary,
@@ -354,7 +359,10 @@ class DatabaseManager:
                 FROM activity_snapshots a
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
                 LEFT JOIN activities act ON a.id = act.snapshot_id
-                WHERE a.timestamp > datetime('now', ?) 
+                WHERE a.timestamp >= (
+                    SELECT datetime(max_time, ?) 
+                    FROM latest_time
+                )
                 ORDER BY a.timestamp DESC
             """, (f'-{hours} hours',))
             
@@ -388,6 +396,9 @@ class DatabaseManager:
 
     def store_summary(self, summary: ScreenSummary) -> int:
         """Store a screen summary in the database"""
+        if not summary or not summary.timestamp:
+            raise DatabaseError("Invalid summary: missing required fields")
+
         try:
             conn = self.get_connection()
             cursor = conn.cursor()

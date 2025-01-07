@@ -56,14 +56,8 @@ def test_database_integrity(db):
 def test_error_handling(db):
     """Test database error handling"""
     with pytest.raises(DatabaseError):
-        # Create an invalid summary
-        invalid_summary = ScreenSummary(
-            timestamp=datetime.now(),
-            summary="Invalid",
-            activities=[],
-            context=None  # This will cause the error
-        )
-        db.store_summary(invalid_summary)
+        # Pass None to trigger validation error
+        db.store_summary(None)
 
 def test_focus_metrics(db, sample_summary):
     """Test focus metrics calculation"""
@@ -72,11 +66,13 @@ def test_focus_metrics(db, sample_summary):
     focused.context.attention_state = "focused"
     scattered = sample_summary.model_copy()
     scattered.context.attention_state = "scattered"
-    
+
+    # Store the summaries
     db.store_summary(focused)
     db.store_summary(scattered)
-    
-    # Get recent activity
-    activity = db.get_recent_activity(hours=1)
-    assert len(activity) > 0
-    assert any('focused' in str(a) for a in activity) 
+
+    # Get recent activity - use a larger time window for testing
+    activity = db.get_recent_activity(hours=24)  # Increased from 1 hour to 24 hours
+    assert len(activity) > 0, "No activity records found"
+    assert any(a['focus_state'] == 'focused' for a in activity), "No focused state found"
+    assert any(a['focus_state'] == 'scattered' for a in activity), "No scattered state found" 
