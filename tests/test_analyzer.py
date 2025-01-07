@@ -37,8 +37,9 @@ async def test_successful_analysis(mock_image_path, mock_gemini_response):
         # Verify results
         assert isinstance(result, ScreenSummary)
         assert result.summary == mock_gemini_response["summary"]
-        assert result.key_activities == mock_gemini_response["activities"]
-        assert isinstance(result.timestamp, datetime)
+        # Get activity names from the Activity objects
+        activity_names = [activity.name for activity in result.activities]
+        assert activity_names == mock_gemini_response["activities"]
 
 @pytest.mark.asyncio
 async def test_malformed_json_response(mock_image_path):
@@ -55,7 +56,7 @@ async def test_malformed_json_response(mock_image_path):
         # Verify error handling
         assert isinstance(result, ScreenSummary)
         assert "Invalid JSON response..." in result.summary
-        assert result.key_activities == ["Unknown"]
+        assert [activity.name for activity in result.activities] == ["Unknown"]
 
 @pytest.mark.asyncio
 async def test_empty_response(mock_image_path):
@@ -72,7 +73,7 @@ async def test_empty_response(mock_image_path):
         # Verify error handling
         assert isinstance(result, ScreenSummary)
         assert "Error analyzing screenshot" in result.summary
-        assert result.key_activities == ["Error"]
+        assert [activity.name for activity in result.activities] == ["Error"]
 
 @pytest.mark.asyncio
 async def test_api_error(mock_image_path):
@@ -87,7 +88,7 @@ async def test_api_error(mock_image_path):
         # Verify error handling
         assert isinstance(result, ScreenSummary)
         assert "Error analyzing screenshot: API Error" in result.summary
-        assert result.key_activities == ["Error"]
+        assert [activity.name for activity in result.activities] == ["Error"]
 
 @pytest.mark.asyncio
 async def test_markdown_cleanup(mock_image_path):
@@ -109,7 +110,7 @@ async def test_markdown_cleanup(mock_image_path):
         # Verify cleanup
         assert isinstance(result, ScreenSummary)
         assert result.summary == "Test summary"
-        assert result.key_activities == ["coding"]
+        assert [activity.name for activity in result.activities] == ["coding"]
 
 @pytest.mark.asyncio
 async def test_image_cleanup(mock_image_path):
