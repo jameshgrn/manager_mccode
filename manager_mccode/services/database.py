@@ -149,71 +149,31 @@ class DatabaseManager:
             raise DatabaseError(f"Data cleanup failed: {e}")
 
     def get_database_stats(self) -> Dict:
-        """Get database statistics and health metrics
-        
-        Returns:
-            Dict containing:
-            - Table row counts
-            - Database size
-            - Index sizes
-            - Last optimization time
-            - Data retention metrics
-        """
+        """Get database statistics"""
         try:
-            stats = {}
-            
-            # Get table statistics
             cursor = self.conn.execute("""
                 SELECT 
-                    name,
-                    (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
-                    (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
-                FROM sqlite_master m
-                WHERE type='table' AND name NOT LIKE 'sqlite_%'
-            """)
-            
-            tables = {}
-            for table_name, index_count, trigger_count in cursor.fetchall():
-                # Get row count for table
-                count_cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")
-                row_count = count_cursor.fetchone()[0]
-                
-                tables[table_name] = {
-                    'row_count': row_count,
-                    'index_count': index_count,
-                    'trigger_count': trigger_count
-                }
-            
-            stats['tables'] = tables
-            
-            # Get database file size
-            stats['database_size_mb'] = Path(self.db_path).stat().st_size / 1024 / 1024
-            
-            # Get oldest and newest records
-            cursor = self.conn.execute("""
-                SELECT 
-                    MIN(timestamp) as oldest,
-                    MAX(timestamp) as newest,
-                    COUNT(*) as total
+                    COUNT(*) as total_records,
+                    MIN(timestamp) as earliest_record,
+                    MAX(timestamp) as latest_record
                 FROM activity_snapshots
             """)
-            time_stats = cursor.fetchone()
-            stats['time_range'] = {
-                'oldest': time_stats[0],
-                'newest': time_stats[1],
-                'total_records': time_stats[2]
+            snapshot_stats = dict(zip(['total_records', 'earliest_record', 'latest_record'], cursor.fetchone()))
+            
+            # Get table info
+            cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            # Get database size (0 for in-memory)
+            db_size = 0
+            if self.db_path != ":memory:":
+                db_size = Path(self.db_path).stat().st_size / (1024 * 1024)  # Convert to MB
+            
+            return {
+                'tables': tables,
+                'database_size_mb': db_size,
+                'time_range': snapshot_stats
             }
-            
-            # Get index statistics
-            cursor = self.conn.execute("""
-                SELECT name, sql 
-                FROM sqlite_master 
-                WHERE type='index' AND sql IS NOT NULL
-            """)
-            stats['indexes'] = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            return stats
-            
         except Exception as e:
             logger.error(f"Failed to get database stats: {e}")
             raise DatabaseError(f"Stats collection failed: {e}")
@@ -360,11 +320,11 @@ class DatabaseManager:
         try:
             cursor = self.conn.execute("""
                 SELECT 
-                    a.timestamp,
-                    a.summary,
+                    datetime(a.timestamp) as timestamp,
+                    a.summary as summary,
                     f.state_type as focus_state,
-                    f.confidence,
-                    e.environment
+                    f.confidence as confidence,
+                    e.environment as environment
                 FROM activity_snapshots a
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
                 LEFT JOIN environments e ON a.id = e.snapshot_id
@@ -372,7 +332,9 @@ class DatabaseManager:
                 ORDER BY a.timestamp DESC
             """, [cutoff])
             
-            return [dict(row) for row in cursor.fetchall()]
+            # Convert rows to dictionaries using column names
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting recent activity: {e}")
             raise DatabaseError(f"Failed to get recent activity: {e}")
@@ -539,13 +501,13 @@ class DatabaseManager:
         try:
             cursor = self.conn.execute("""
                 SELECT 
-                    a.id,
+                    a.id as id,
                     datetime(a.timestamp) as timestamp,
-                    a.summary,
-                    a.focus_score,
+                    a.summary as summary,
+                    a.focus_score as focus_score,
                     f.state_type as focus_state,
                     f.confidence as focus_confidence,
-                    e.environment
+                    e.environment as environment
                 FROM activity_snapshots a
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
                 LEFT JOIN environments e ON a.id = e.snapshot_id
@@ -553,7 +515,9 @@ class DatabaseManager:
                 LIMIT ?
             """, [limit])
             
-            return [dict(row) for row in cursor.fetchall()]
+            # Convert rows to dictionaries using column names
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting recent summaries: {e}")
             raise DatabaseError(f"Failed to get recent summaries: {e}") 
