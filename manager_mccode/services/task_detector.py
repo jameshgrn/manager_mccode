@@ -125,16 +125,21 @@ class TaskDetector:
         attention_levels = [a.focus_indicators.attention_level for a in activities]
         attention_std = self._calculate_std(attention_levels)
         
+        # Count high context switches
+        high_switches = sum(1 for a in activities if a.focus_indicators.context_switches == "high")
+        switch_penalty = min(0.3, high_switches * 0.15)  # Each high switch reduces confidence by 15%
+        
         # Higher standard deviation = lower confidence
-        # Adjusted formula to give higher base confidence
-        base_confidence = max(0.0, 1.0 - (attention_std / 50))  # Changed from 100 to 50
+        base_confidence = max(0.0, 1.0 - (attention_std / 50))  # Scale for standard deviation
         
         # Adjust based on number of activities (more data = higher confidence)
-        # Adjusted to give more weight to activity count
-        activity_factor = min(1.0, len(activities) / 3)  # Changed from 5 to 3
+        activity_factor = min(1.0, len(activities) / 3)
         
-        # Combine factors with higher weight on base_confidence
-        return (base_confidence * 0.7 + activity_factor * 0.3)
+        # Combine factors with weights and apply switch penalty
+        raw_confidence = (base_confidence * 0.6 + activity_factor * 0.4)
+        final_confidence = max(0.0, raw_confidence - switch_penalty)
+        
+        return final_confidence
 
     def _detect_environment(self, activity_names: List[str]) -> str:
         """Detect working environment from activities"""
