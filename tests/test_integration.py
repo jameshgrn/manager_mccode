@@ -40,7 +40,8 @@ async def test_capture_analyze_store_flow(test_env):
         
         # Capture screenshot
         screenshot_path = test_env['image_manager'].save_screenshot()
-        assert screenshot_path.exists()
+        # Convert string path to Path object for exists check
+        assert Path(screenshot_path).exists()
         
         # Mock Gemini API response
         mock_response = {
@@ -92,7 +93,8 @@ async def test_metrics_and_recommendations(test_env):
         context=Context(
             attention_state="focused",
             confidence=0.9,
-            environment="office"
+            environment="office",
+            primary_task="coding"
         )
     )
     
@@ -113,7 +115,8 @@ async def test_metrics_and_recommendations(test_env):
         context=Context(
             attention_state="scattered",
             confidence=0.8,
-            environment="home"
+            environment="home",
+            primary_task="browsing"
         )
     )
     
