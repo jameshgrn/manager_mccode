@@ -64,13 +64,32 @@ def test_error_handling(db):
 
 def test_focus_metrics(db, sample_summary):
     """Test focus metrics calculation"""
-    # Store summaries with different focus states
-    focused = sample_summary.model_copy()
-    focused.context.attention_state = "focused"
-    logger.info(f"Created focused summary with state: {focused.context.attention_state}")
+    # Create two completely separate summaries
+    focused = ScreenSummary(
+        timestamp=sample_summary.timestamp,
+        summary=sample_summary.summary,
+        activities=sample_summary.activities,
+        context=Context(
+            primary_task=sample_summary.context.primary_task,
+            attention_state="focused",  # Set this directly
+            environment=sample_summary.context.environment,
+            confidence=sample_summary.context.confidence
+        )
+    )
     
-    scattered = sample_summary.model_copy()
-    scattered.context.attention_state = "scattered"
+    scattered = ScreenSummary(
+        timestamp=sample_summary.timestamp,
+        summary=sample_summary.summary,
+        activities=sample_summary.activities,
+        context=Context(
+            primary_task=sample_summary.context.primary_task,
+            attention_state="scattered",  # Set this directly
+            environment=sample_summary.context.environment,
+            confidence=sample_summary.context.confidence
+        )
+    )
+
+    logger.info(f"Created focused summary with state: {focused.context.attention_state}")
     logger.info(f"Created scattered summary with state: {scattered.context.attention_state}")
 
     # Verify the states are different before storing
