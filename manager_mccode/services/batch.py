@@ -8,11 +8,16 @@ from manager_mccode.config.settings import settings
 import google.generativeai as genai
 import json
 import os
+from manager_mccode.services.errors import BatchError
 
 logger = logging.getLogger(__name__)
 
-class BatchProcessingError(Exception):
-    """Base exception for batch processing errors"""
+class BatchProcessingError(BatchError):
+    """Exception raised when batch processing fails"""
+    pass
+
+class BatchQueueError(BatchError):
+    """Exception raised when batch queue operations fail"""
     pass
 
 class BatchProcessor:

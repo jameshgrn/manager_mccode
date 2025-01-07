@@ -9,6 +9,7 @@ from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusI
 from manager_mccode.config.settings import settings
 from manager_mccode.services.analyzer import GeminiAnalyzer
 from manager_mccode.models.focus_session import FocusSession, FocusTrigger
+from manager_mccode.services.errors import DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,12 @@ MIGRATIONS = [
     """
 ]
 
-class DatabaseError(Exception):
-    """Base exception for database-related errors"""
+class DatabaseConnectionError(DatabaseError):
+    """Exception raised when database connection fails"""
+    pass
+
+class QueryError(DatabaseError):
+    """Exception raised when a database query fails"""
     pass
 
 class DatabaseManager:

@@ -9,11 +9,20 @@ import os
 import asyncio
 from typing import List, Dict
 from pathlib import Path
+from manager_mccode.services.errors import AnalyzerError
 
 logger = logging.getLogger(__name__)
 
 # Configure Gemini
 genai.configure(api_key=settings.GEMINI_API_KEY)
+
+class APIError(AnalyzerError):
+    """Exception raised when API calls fail"""
+    pass
+
+class AnalysisError(AnalyzerError):
+    """Exception raised when analysis fails"""
+    pass
 
 class GeminiAnalyzer:
     def __init__(self, model_name=settings.GEMINI_MODEL_NAME):

@@ -1,55 +1,51 @@
 from pathlib import Path
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
-from pydantic_settings import BaseSettings
-from pydantic import Field, field_validator, ConfigDict
-import os
 
 class Settings(BaseSettings):
-    """Unified configuration settings for Manager McCode"""
+    """Application settings with validation"""
     
-    # API Settings
-    GEMINI_API_KEY: str = Field(..., description="Google Gemini API key")
-    GEMINI_MODEL_NAME: str = Field(
-        'gemini-1.5-flash',  # Updated to latest model
-        description="Gemini model to use for analysis"
-    )
+    # API Configuration
+    GEMINI_API_KEY: str
+    GEMINI_MODEL_NAME: str = "gemini-1.5-flash"
     
-    # Service Settings
-    SCREENSHOT_INTERVAL_SECONDS: int = Field(10, ge=1, description="Interval between screenshots")
-    DEFAULT_BATCH_SIZE: int = Field(12, ge=1, description="Number of screenshots to process in a batch")
-    DEFAULT_BATCH_INTERVAL_SECONDS: int = Field(120, ge=1, description="Interval between batch processing")
+    # Service Configuration
+    SCREENSHOT_INTERVAL_SECONDS: int = 10
+    DEFAULT_BATCH_SIZE: int = 12
+    DEFAULT_BATCH_INTERVAL_SECONDS: int = 120
     
-    # Path Settings
-    BASE_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent.parent)
-    DATA_DIR: Path = Field(default_factory=lambda: Path.home() / ".manager_mccode")
-    DEFAULT_DB_PATH: Path = Field(default_factory=lambda: Path.home() / ".manager_mccode" / "data.db")
-    TEMP_DIR: Path = Field(default_factory=lambda: Path.home() / ".manager_mccode" / "temp")
-    LOG_DIR: Path = Field(default_factory=lambda: Path.home() / ".manager_mccode" / "logs")
+    # Path Configuration
+    BASE_DIR: Path = Path(__file__).parent.parent.parent
+    DATA_DIR: Path = BASE_DIR / "data"
+    TEMP_DIR: Path = BASE_DIR / "temp_screenshots"
+    LOG_DIR: Path = BASE_DIR / "logs"
     
-    # Retention Settings
-    SCREENSHOT_RETENTION_DAYS: int = Field(7, ge=1, description="Days to keep screenshots")
-    DATA_RETENTION_DAYS: int = Field(90, ge=1, description="Days to keep activity data")
+    # Web Configuration
+    WEB_PORT: int = 8000
+    WEB_HOST: str = "localhost"
+    WEB_AUTH_REQUIRED: bool = True
     
-    # Security Settings
-    ENCRYPT_SCREENSHOTS: bool = Field(False, description="Enable screenshot encryption")
-    WEB_AUTH_REQUIRED: bool = Field(True, description="Require authentication for web interface")
+    # Retention Configuration
+    SCREENSHOT_RETENTION_DAYS: int = 7
+    DATA_RETENTION_DAYS: int = 90
     
-    # Development Settings
-    DEBUG: bool = Field(False, description="Enable debug mode")
-    ENV: str = Field("production", description="Environment (development/production)")
-
-    @field_validator("DATA_DIR", "TEMP_DIR", "LOG_DIR", mode="before")
-    @classmethod
-    def create_directories(cls, v: Path) -> Path:
-        """Ensure required directories exist"""
-        v.mkdir(parents=True, exist_ok=True)
-        return v
+    # Security Configuration
+    ENCRYPT_SCREENSHOTS: bool = False
     
-    model_config = ConfigDict(
+    # Development Configuration
+    DEBUG: bool = False
+    ENV: str = "production"
+    
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True
     )
+    
+    def validate_paths(self) -> None:
+        """Ensure all required paths exist"""
+        for path in [self.DATA_DIR, self.TEMP_DIR, self.LOG_DIR]:
+            path.mkdir(parents=True, exist_ok=True)
 
-# Global settings instance
-settings = Settings() 
+settings = Settings()
+settings.validate_paths() 

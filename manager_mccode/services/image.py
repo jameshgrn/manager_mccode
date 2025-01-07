@@ -3,18 +3,15 @@ import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import mss
 from PIL import Image
 import io
 
 from manager_mccode.config.settings import settings
+from manager_mccode.services.errors import ImageError
 
 logger = logging.getLogger(__name__)
-
-class ImageError(Exception):
-    """Base exception for image-related errors"""
-    pass
 
 class ScreenshotError(ImageError):
     """Exception raised when screenshot capture fails"""

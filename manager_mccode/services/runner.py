@@ -12,6 +12,7 @@ from manager_mccode.services.database import DatabaseManager
 from manager_mccode.services.image import ImageManager
 from manager_mccode.services.batch import BatchProcessor
 from manager_mccode.services.analyzer import GeminiAnalyzer
+from manager_mccode.services.errors import RunnerError
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,9 @@ class ServiceRunner:
         # Constants
         self.MAX_ERRORS = 3
         self.CLEANUP_INTERVAL_HOURS = 24
+        
+        # Add missing cleanup of resources
+        self.cleanup_tasks = []
         
     def _setup_logging(self):
         """Configure logging for background service"""
@@ -86,20 +90,14 @@ class ServiceRunner:
             logger.error(f"Error during cleanup: {e}")
     
     async def cleanup(self):
-        """Cleanup service resources"""
-        tasks = []
-        
-        # Cleanup image manager
-        if self.image_manager:
-            tasks.append(self.image_manager.cleanup())
-        
-        # Close database connections
-        if self.db:
-            tasks.append(asyncio.to_thread(self.db.close))
-        
-        # Wait for all cleanup tasks
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        """Ensure all resources are properly cleaned up"""
+        tasks = [
+            self.image_manager.cleanup(),
+            self.batch_processor.cleanup(),
+            self.analyzer.cleanup(),
+            self.db.cleanup()
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
     
     async def run(self):
         """Run the service"""
@@ -166,6 +164,14 @@ class ServiceRunner:
             await self.image_manager.cleanup_old_images()
             await asyncio.to_thread(self.db.cleanup_old_data)
             self.last_cleanup_time = now
+
+class ServiceInitError(RunnerError):
+    """Exception raised when service initialization fails"""
+    pass
+
+class ShutdownError(RunnerError):
+    """Exception raised when service shutdown fails"""
+    pass
 
 # Global service runner instance
 service_runner = ServiceRunner()

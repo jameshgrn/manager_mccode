@@ -9,6 +9,7 @@ from pathlib import Path
 from manager_mccode.services.metrics import MetricsCollector
 from manager_mccode.services.database import DatabaseManager
 from manager_mccode.config.settings import Settings
+from manager_mccode.services.errors import WebError
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Manager McCode Dashboard")
@@ -22,6 +23,14 @@ settings = Settings()
 db = DatabaseManager(settings.DEFAULT_DB_PATH)
 db.initialize()  # Ensure tables exist
 metrics = MetricsCollector(db)
+
+class APIError(WebError):
+    """Exception raised when API endpoints fail"""
+    pass
+
+class AuthenticationError(WebError):
+    """Exception raised when authentication fails"""
+    pass
 
 @app.get("/")
 async def dashboard(request: Request):
