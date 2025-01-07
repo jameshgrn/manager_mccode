@@ -70,10 +70,23 @@ class GeminiAnalyzer:
             try:
                 result = json.loads(response_text)
                 summary_part = result.get('summary', '')
-                activities = result.get('activities', [])
+                activity_names = result.get('activities', [])
                 
-                if not summary_part or not activities:
+                if not summary_part or not activity_names:
                     raise ValueError("Missing summary or activities in JSON response")
+                
+                # Convert activity names to Activity objects
+                activities = [
+                    Activity(
+                        name=name,
+                        category="detected",  # Default category
+                        focus_indicators=FocusIndicators(
+                            attention_level=80,  # Default values
+                            context_switches="low",
+                            workspace_organization="organized"
+                        )
+                    ) for name in activity_names
+                ]
                 
                 return ScreenSummary(
                     timestamp=datetime.now(),
@@ -85,10 +98,20 @@ class GeminiAnalyzer:
                 print(f"Error parsing JSON response: {str(e)}")
                 print(f"Raw response: {response_text}")
                 summary_part = response_text[:200] + "..."
+                # Create a single unknown activity
+                activities = [Activity(
+                    name="Unknown",
+                    category="error",
+                    focus_indicators=FocusIndicators(
+                        attention_level=0,
+                        context_switches="unknown",
+                        workspace_organization="unknown"
+                    )
+                )]
                 return ScreenSummary(
                     timestamp=datetime.now(),
                     summary=summary_part,
-                    activities=["Unknown"]
+                    activities=activities
                 )
             
         except Exception as e:
@@ -96,10 +119,20 @@ class GeminiAnalyzer:
             print("Full error:")
             import traceback
             print(traceback.format_exc())
+            # Create an error activity
+            activities = [Activity(
+                name="Error",
+                category="error",
+                focus_indicators=FocusIndicators(
+                    attention_level=0,
+                    context_switches="unknown",
+                    workspace_organization="unknown"
+                )
+            )]
             return ScreenSummary(
                 timestamp=datetime.now(),
                 summary=f"Error analyzing screenshot: {str(e)}",
-                activities=["Error"]
+                activities=activities
             )
         finally:
             # Always clean up the image file
