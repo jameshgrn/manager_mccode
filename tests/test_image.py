@@ -41,11 +41,13 @@ def test_cleanup_old_images(image_manager, temp_dir):
         Image.new('RGB', (100, 100), color='white').save(path)
         created_files.append(path)
     
-    # Set creation time to past (2 hours ago to ensure it's old enough)
-    two_hours_ago = datetime.now() - timedelta(hours=2)
+    # Set creation time to past (2 hours ago)
+    past_time = datetime.now() - timedelta(hours=2)
     for path in created_files:
-        os.utime(str(path), (two_hours_ago.timestamp(), two_hours_ago.timestamp()))
+        os.utime(str(path), (past_time.timestamp(), past_time.timestamp()))
         assert path.exists(), f"File {path} should exist before cleanup"
+        creation_time = datetime.fromtimestamp(path.stat().st_ctime)
+        assert creation_time < datetime.now(), f"File {path} should have past timestamp"
     
     # Clean up with max age of 0 minutes (should remove all)
     image_manager.cleanup_old_images(max_age_minutes=0)

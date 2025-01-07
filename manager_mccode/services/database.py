@@ -332,15 +332,18 @@ class DatabaseManager:
                 ORDER BY a.timestamp DESC
             """, [cutoff])
             
-            # Convert rows to dictionaries using column names
-            columns = [description[0] for description in cursor.description]
-            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            
-            # Ensure focus_state is included in each result
-            for result in results:
-                if result.get('focus_state') is None:
-                    result['focus_state'] = 'unknown'
-                    
+            # Convert rows to dictionaries and ensure focus_state is preserved
+            results = []
+            for row in cursor.fetchall():
+                result = {}
+                for idx, col in enumerate(cursor.description):
+                    value = row[idx]
+                    if col[0] == 'focus_state' and value is not None:
+                        result[col[0]] = value  # Preserve the exact focus state
+                    else:
+                        result[col[0]] = value
+                results.append(result)
+                
             return results
         except Exception as e:
             logger.error(f"Error getting recent activity: {e}")
