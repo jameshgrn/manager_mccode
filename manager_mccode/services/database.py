@@ -15,7 +15,10 @@ MIGRATIONS = [
     DROP TABLE IF EXISTS activity_snapshots;
     DROP TABLE IF EXISTS focus_states;
     DROP TABLE IF EXISTS task_segments;
+    DROP TABLE IF EXISTS activities;
+    DROP TABLE IF EXISTS environments;
 
+    -- Core activity tracking
     CREATE TABLE activity_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TIMESTAMP NOT NULL,
@@ -26,29 +29,69 @@ MIGRATIONS = [
         batch_id INTEGER
     );
 
+    -- Focus state tracking
     CREATE TABLE focus_states (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        snapshot_id INTEGER,
-        state_type VARCHAR(50),
-        confidence FLOAT,
-        context TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        snapshot_id INTEGER NOT NULL,
+        state_type VARCHAR(50) NOT NULL,  -- focused, transitioning, scattered
+        confidence FLOAT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
+    -- Task segments for continuous work periods
     CREATE TABLE task_segments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         start_time TIMESTAMP NOT NULL,
         end_time TIMESTAMP,
-        task_name TEXT,
-        category TEXT,
-        context TEXT
+        task_name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        focus_level FLOAT  -- Aggregate focus score for the segment
     );
 
+    -- Environment details for each snapshot
+    CREATE TABLE environments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        window_count INTEGER,
+        tab_count INTEGER,
+        active_displays INTEGER,
+        noise_level TEXT,  -- low, medium, high
+        interruption_probability FLOAT,
+        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+    );
+
+    -- Activity details for each snapshot
+    CREATE TABLE activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        task_segment_id INTEGER,
+        activity_type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        attention_level FLOAT NOT NULL,
+        context_switches TEXT NOT NULL,  -- low, medium, high
+        workspace_organization TEXT NOT NULL,  -- organized, mixed, scattered
+        start_time TIMESTAMP,
+        duration INTEGER,  -- in seconds
+        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_segment_id) REFERENCES task_segments(id) ON DELETE SET NULL
+    );
+
+    -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
         ON activity_snapshots(timestamp);
     
     CREATE INDEX IF NOT EXISTS idx_task_segments_time 
         ON task_segments(start_time, end_time);
+    
+    CREATE INDEX IF NOT EXISTS idx_activities_snapshot 
+        ON activities(snapshot_id);
+    
+    CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot 
+        ON focus_states(snapshot_id);
+    
+    CREATE INDEX IF NOT EXISTS idx_environments_snapshot 
+        ON environments(snapshot_id);
     """
 ]
 
@@ -178,11 +221,21 @@ class DatabaseManager:
             logger.info("Database connection closed.") 
 
     def store_summary(self, summary: ScreenSummary):
-        """Store a summary in the database and return its ID"""
+        """Store a summary in the database and return its ID
+        
+        This method handles the complete storage of a screen summary, including:
+        - The main activity snapshot
+        - Focus state information
+        - Environmental details
+        - Activity details
+        - Task segment updates
+        
+        All operations are performed in a single transaction for consistency.
+        """
         try:
             self.conn.execute("BEGIN TRANSACTION")
             try:
-                # Insert snapshot and get the generated ID
+                # 1. Insert main snapshot
                 cursor = self.conn.execute("""
                     INSERT INTO activity_snapshots (
                         timestamp, summary, focus_score
@@ -195,22 +248,60 @@ class DatabaseManager:
                 ])
                 snapshot_id = cursor.fetchone()[0]
 
-                # Store focus states if we have context
+                # 2. Store focus state if available
                 if summary.context and summary.context.attention_state:
                     self.conn.execute("""
                         INSERT INTO focus_states (
-                            snapshot_id, state_type, confidence, context
-                        ) VALUES (?, ?, ?, ?)
+                            snapshot_id, state_type, confidence
+                        ) VALUES (?, ?, ?)
                     """, [
                         snapshot_id,
                         summary.context.attention_state,
-                        summary.context.confidence,
-                        json.dumps(summary.context.dict())
+                        summary.context.confidence
                     ])
 
-                # Update task segments if needed
+                # 3. Store environment details
+                if summary.context and summary.context.environment:
+                    # Environment is stored as a string in the model
+                    env_data = json.loads(summary.context.environment)
+                    self.conn.execute("""
+                        INSERT INTO environments (
+                            snapshot_id, window_count, tab_count, 
+                            active_displays, noise_level, interruption_probability
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, [
+                        snapshot_id,
+                        env_data.get('window_count', 0),
+                        env_data.get('tab_count', 0),
+                        env_data.get('active_displays', 1),
+                        env_data.get('noise_level', 'medium'),
+                        env_data.get('interruption_probability', 0.5)
+                    ])
+
+                # 4. Update task segments and store activities
                 if summary.context and summary.context.primary_task:
-                    self._update_task_segments(summary)
+                    task_segment_id = self._update_task_segments(summary)
+                    
+                    # Store activities with reference to task segment
+                    if summary.activities:
+                        for activity in summary.activities:
+                            self.conn.execute("""
+                                INSERT INTO activities (
+                                    snapshot_id, task_segment_id, activity_type,
+                                    category, attention_level, context_switches,
+                                    workspace_organization, start_time, duration
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, [
+                                snapshot_id,
+                                task_segment_id,
+                                activity.name,  # Using name as activity_type
+                                activity.category,
+                                float(activity.focus_indicators.attention_level) / 100.0,
+                                activity.focus_indicators.context_switches,
+                                activity.focus_indicators.workspace_organization,
+                                summary.timestamp,  # Using summary timestamp
+                                None  # Duration not in model
+                            ])
 
                 self.conn.commit()
                 return snapshot_id
@@ -224,42 +315,70 @@ class DatabaseManager:
             raise
 
     def _calculate_focus_score(self, summary: ScreenSummary) -> float:
-        """Calculate a focus score from the summary"""
+        """Calculate a focus score from the summary using weighted components
+        
+        Weights:
+        - Attention level: 50% (direct measure of focus)
+        - Context switches: 30% (impact on task continuity)
+        - Workspace organization: 20% (environmental factor)
+        
+        Base attention states are also more nuanced:
+        - focused: 0.85-1.0
+        - transitioning: 0.4-0.7
+        - scattered: 0.1-0.4
+        """
         try:
-            # Base score from attention state
-            base_score = {
-                'focused': 0.8,
-                'transitioning': 0.5,
-                'scattered': 0.2
-            }.get(summary.context.attention_state, 0.5)
+            # Base score from attention state with randomized variation
+            # This adds some natural variation within each state
+            import random
+            base_ranges = {
+                'focused': (0.85, 1.0),
+                'transitioning': (0.4, 0.7),
+                'scattered': (0.1, 0.4)
+            }
+            base_range = base_ranges.get(summary.context.attention_state, (0.3, 0.6))
+            base_score = random.uniform(*base_range)
 
-            # Adjust based on activities
+            # Adjust based on activities with weights
             activity_scores = []
             for activity in summary.activities:
                 focus_indicators = activity.focus_indicators
-                activity_score = 0.0
                 
                 # Convert string indicators to numeric scores
                 attention_level = float(focus_indicators.attention_level) / 100.0
-                context_switches = {
-                    'low': 0.8,
-                    'medium': 0.5,
-                    'high': 0.2
-                }.get(focus_indicators.context_switches, 0.5)
-                organization = {
-                    'organized': 0.8,
-                    'mixed': 0.5,
-                    'scattered': 0.2
-                }.get(focus_indicators.workspace_organization, 0.5)
                 
-                # Combine scores
-                activity_score = (attention_level + context_switches + organization) / 3
-                activity_scores.append(activity_score)
+                context_switches = {
+                    'low': 0.9,    # Minimal interruption
+                    'medium': 0.6,  # Some task switching
+                    'high': 0.3    # Frequent switching
+                }.get(focus_indicators.context_switches, 0.6)
+                
+                organization = {
+                    'organized': 0.9,   # Clear structure
+                    'mixed': 0.6,       # Some clutter
+                    'scattered': 0.3    # Disorganized
+                }.get(focus_indicators.workspace_organization, 0.6)
+                
+                # Apply weights to each component
+                weighted_score = (
+                    attention_level * 0.5 +      # 50% weight
+                    context_switches * 0.3 +     # 30% weight
+                    organization * 0.2           # 20% weight
+                )
+                activity_scores.append(weighted_score)
 
-            # Combine base score with activity scores
+            # Combine base score with weighted activity scores
             if activity_scores:
-                return (base_score + sum(activity_scores) / len(activity_scores)) / 2
-            return base_score
+                # Base score gets 40% weight, activity scores get 60%
+                final_score = base_score * 0.4 + (sum(activity_scores) / len(activity_scores)) * 0.6
+                
+                # Add small random variation to avoid repetitive scores
+                variation = random.uniform(-0.05, 0.05)
+                final_score = max(0.0, min(1.0, final_score + variation))
+                
+                return round(final_score, 2)
+            
+            return round(base_score, 2)
 
         except Exception as e:
             logger.error(f"Error calculating focus score: {e}")
