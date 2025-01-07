@@ -334,7 +334,14 @@ class DatabaseManager:
             
             # Convert rows to dictionaries using column names
             columns = [description[0] for description in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            # Ensure focus_state is included in each result
+            for result in results:
+                if result.get('focus_state') is None:
+                    result['focus_state'] = 'unknown'
+                    
+            return results
         except Exception as e:
             logger.error(f"Error getting recent activity: {e}")
             raise DatabaseError(f"Failed to get recent activity: {e}")

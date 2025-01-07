@@ -127,16 +127,20 @@ class ImageManager:
         
         try:
             count = 0
-            for filepath in self.temp_dir.glob("*.jpg"):  # Changed pattern to match test files
+            for filepath in self.temp_dir.glob("screenshot_*.jpg"):  # Match test file pattern
                 try:
                     # Use creation time for comparison
                     creation_time = datetime.fromtimestamp(filepath.stat().st_ctime)
                     if creation_time < cutoff:
-                        filepath.unlink()
-                        count += 1
+                        try:
+                            filepath.unlink()
+                            count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to delete {filepath}: {e}")
+                            continue
                 except Exception as e:
-                    logger.error(f"Failed to delete {filepath}: {e}")
-                    continue  # Continue with next file even if this one fails
+                    logger.error(f"Failed to check {filepath}: {e}")
+                    continue
             
             if count > 0:
                 logger.info(f"Cleaned up {count} old screenshots")
