@@ -1,21 +1,151 @@
 """Collect and analyze performance metrics"""
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
-import json
+from manager_mccode.services.database import DatabaseManager
+
+logger = logging.getLogger(__name__)
 
 class MetricsCollector:
-    def __init__(self, db_manager):
-        self.db = db_manager
-        
-    def get_focus_metrics(self, timeframe: timedelta) -> Dict:
-        """Analyze focus patterns and context switching"""
-        # TODO: Implement focus duration tracking
-        # TODO: Calculate context switching frequency
-        # TODO: Identify peak productivity periods
-        pass
+    """Collects and formats activity metrics for analysis"""
+    
+    def __init__(self, db: DatabaseManager):
+        self.db = db
 
-    def get_activity_patterns(self) -> Dict:
-        """Analyze common activity patterns and sequences"""
-        # TODO: Implement activity sequence analysis
-        # TODO: Identify common workflows
-        pass 
+    def get_daily_metrics(self, date: datetime = None) -> Dict:
+        """Get metrics for a specific day"""
+        if not date:
+            date = datetime.now()
+            
+        start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        
+        return {
+            "summary": self._get_daily_summary(start, end),
+            "activities": self._get_activity_breakdown(start, end),
+            "focus_states": self._get_focus_distribution(start, end),
+            "hourly_patterns": self._get_hourly_patterns(start, end)
+        }
+
+    def export_timeframe(self, start: datetime, end: datetime) -> Dict:
+        """Export all metrics for a given timeframe"""
+        return {
+            "timeframe": {
+                "start": start.isoformat(),
+                "end": end.isoformat()
+            },
+            "daily_metrics": self._get_daily_metrics_series(start, end),
+            "aggregate_metrics": self._get_aggregate_metrics(start, end)
+        }
+
+    def _get_daily_summary(self, start: datetime, end: datetime) -> Dict:
+        """Get summary metrics for the day"""
+        try:
+            snapshots = self.db.get_snapshots_between(start, end)
+            total_snapshots = len(snapshots)
+            
+            if not total_snapshots:
+                return {}
+                
+            return {
+                "total_snapshots": total_snapshots,
+                "date": start.date().isoformat(),
+                "active_hours": self._calculate_active_hours(snapshots),
+                "primary_tasks": self._get_primary_tasks(snapshots)
+            }
+        except Exception as e:
+            logger.error(f"Error getting daily summary: {e}")
+            return {}
+
+    def _get_activity_breakdown(self, start: datetime, end: datetime) -> Dict:
+        """Get detailed activity metrics"""
+        try:
+            activities = self.db.get_activities_between(start, end)
+            
+            # Group by category
+            categories = {}
+            for activity in activities:
+                category = activity.get("category", "unknown")
+                categories[category] = categories.get(category, 0) + 1
+                
+            return {
+                "categories": categories,
+                "total_activities": len(activities)
+            }
+        except Exception as e:
+            logger.error(f"Error getting activity breakdown: {e}")
+            return {}
+
+    def _get_focus_distribution(self, start: datetime, end: datetime) -> Dict:
+        """Get focus state distribution"""
+        try:
+            states = self.db.get_focus_states_between(start, end)
+            
+            distribution = {
+                "focused": 0,
+                "neutral": 0,
+                "scattered": 0,
+                "unknown": 0
+            }
+            
+            for state in states:
+                state_type = state.get("state_type", "unknown")
+                distribution[state_type] = distribution.get(state_type, 0) + 1
+                
+            return distribution
+        except Exception as e:
+            logger.error(f"Error getting focus distribution: {e}")
+            return {}
+
+    def _get_hourly_patterns(self, start: datetime, end: datetime) -> Dict:
+        """Get metrics broken down by hour"""
+        try:
+            snapshots = self.db.get_snapshots_between(start, end)
+            
+            hourly = {i: {
+                "activities": 0,
+                "focus_score": 0,
+                "snapshots": 0
+            } for i in range(24)}
+            
+            for snapshot in snapshots:
+                hour = snapshot["timestamp"].hour
+                hourly[hour]["snapshots"] += 1
+                hourly[hour]["focus_score"] += snapshot.get("focus_score", 0)
+                hourly[hour]["activities"] += len(snapshot.get("activities", []))
+            
+            # Calculate averages
+            for hour in hourly:
+                if hourly[hour]["snapshots"] > 0:
+                    hourly[hour]["focus_score"] /= hourly[hour]["snapshots"]
+                    
+            return hourly
+        except Exception as e:
+            logger.error(f"Error getting hourly patterns: {e}")
+            return {}
+
+    def _calculate_active_hours(self, snapshots: List[Dict]) -> float:
+        """Calculate approximate active hours"""
+        if not snapshots:
+            return 0.0
+            
+        # Sort by timestamp
+        sorted_snapshots = sorted(snapshots, key=lambda x: x["timestamp"])
+        
+        # Calculate time differences
+        total_minutes = 0
+        for i in range(len(sorted_snapshots) - 1):
+            diff = sorted_snapshots[i + 1]["timestamp"] - sorted_snapshots[i]["timestamp"]
+            # Only count gaps less than 30 minutes
+            if diff.total_seconds() < 1800:  # 30 minutes
+                total_minutes += diff.total_seconds() / 60
+                
+        return round(total_minutes / 60, 2)  # Convert to hours
+
+    def _get_primary_tasks(self, snapshots: List[Dict]) -> Dict:
+        """Get distribution of primary tasks"""
+        tasks = {}
+        for snapshot in snapshots:
+            task = snapshot.get("primary_task", "unknown")
+            tasks[task] = tasks.get(task, 0) + 1
+        return tasks 
