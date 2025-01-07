@@ -599,3 +599,94 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get focus metrics: {e}")
             raise DatabaseError(f"Failed to get focus metrics: {e}") 
+
+    def get_snapshots_between(self, start: datetime, end: datetime) -> List[Dict]:
+        """Get all snapshots between two timestamps"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    s.id,
+                    s.timestamp,
+                    s.summary,
+                    s.primary_task,
+                    s.focus_score,
+                    GROUP_CONCAT(a.name) as activities
+                FROM activity_snapshots s
+                LEFT JOIN activities a ON s.id = a.snapshot_id
+                WHERE s.timestamp BETWEEN ? AND ?
+                GROUP BY s.id
+                ORDER BY s.timestamp DESC
+            """, (start, end))
+            
+            columns = [description[0] for description in cursor.description]
+            snapshots = []
+            
+            for row in cursor.fetchall():
+                snapshot = dict(zip(columns, row))
+                # Convert activities string to list
+                if snapshot['activities']:
+                    snapshot['activities'] = snapshot['activities'].split(',')
+                else:
+                    snapshot['activities'] = []
+                return snapshots
+                
+        except Exception as e:
+            logger.error(f"Error getting snapshots: {e}")
+            raise DatabaseError(f"Failed to get snapshots: {e}")
+
+    def get_activities_between(self, start: datetime, end: datetime) -> List[Dict]:
+        """Get all activities between two timestamps"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    a.id,
+                    a.name,
+                    a.category,
+                    a.attention_level,
+                    a.context_switches,
+                    a.workspace_organization
+                FROM activities a
+                JOIN activity_snapshots s ON a.snapshot_id = s.id
+                WHERE s.timestamp BETWEEN ? AND ?
+            """, (start, end))
+            
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+        except Exception as e:
+            logger.error(f"Error getting activities: {e}")
+            raise DatabaseError(f"Failed to get activities: {e}")
+
+    def get_focus_states_between(self, start: datetime, end: datetime) -> List[Dict]:
+        """Get focus states between two timestamps"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    s.id,
+                    CASE 
+                        WHEN AVG(a.attention_level) >= 75 THEN 'focused'
+                        WHEN AVG(a.attention_level) <= 40 OR COUNT(CASE WHEN a.context_switches = 'high' THEN 1 END) >= 2 THEN 'scattered'
+                        ELSE 'neutral'
+                    END as state_type,
+                    AVG(a.attention_level) as confidence
+                FROM activity_snapshots s
+                LEFT JOIN activities a ON s.id = a.snapshot_id
+                WHERE s.timestamp BETWEEN ? AND ?
+                GROUP BY s.id
+            """, (start, end))
+            
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+        except Exception as e:
+            logger.error(f"Error getting focus states: {e}")
+            raise DatabaseError(f"Failed to get focus states: {e}") 

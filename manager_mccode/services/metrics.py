@@ -149,3 +149,69 @@ class MetricsCollector:
             task = snapshot.get("primary_task", "unknown")
             tasks[task] = tasks.get(task, 0) + 1
         return tasks 
+
+    def _get_daily_metrics_series(self, start: datetime, end: datetime) -> List[Dict]:
+        """Get metrics for each day in the timeframe"""
+        daily_metrics = []
+        current = start
+        
+        while current <= end:
+            next_day = current + timedelta(days=1)
+            metrics = {
+                "date": current.date().isoformat(),
+                "summary": self._get_daily_summary(current, next_day),
+                "activities": self._get_activity_breakdown(current, next_day),
+                "focus_states": self._get_focus_distribution(current, next_day),
+                "hourly_patterns": self._get_hourly_patterns(current, next_day)
+            }
+            daily_metrics.append(metrics)
+            current = next_day
+            
+        return daily_metrics
+
+    def _get_aggregate_metrics(self, start: datetime, end: datetime) -> Dict:
+        """Get aggregated metrics for the entire timeframe"""
+        try:
+            # Get all data for the period
+            snapshots = self.db.get_snapshots_between(start, end)
+            activities = self.db.get_activities_between(start, end)
+            focus_states = self.db.get_focus_states_between(start, end)
+            
+            # Calculate aggregates
+            total_snapshots = len(snapshots)
+            if not total_snapshots:
+                return {}
+            
+            # Activity category distribution
+            category_counts = {}
+            for activity in activities:
+                category = activity.get("category", "unknown")
+                category_counts[category] = category_counts.get(category, 0) + 1
+            
+            # Focus state distribution
+            focus_distribution = {
+                "focused": 0,
+                "neutral": 0,
+                "scattered": 0,
+                "unknown": 0
+            }
+            for state in focus_states:
+                state_type = state.get("state_type", "unknown")
+                focus_distribution[state_type] = focus_distribution.get(state_type, 0) + 1
+            
+            # Calculate average focus score
+            focus_scores = [s.get("focus_score", 0) for s in snapshots if s.get("focus_score") is not None]
+            avg_focus_score = sum(focus_scores) / len(focus_scores) if focus_scores else 0
+            
+            return {
+                "total_snapshots": total_snapshots,
+                "timeframe_hours": (end - start).total_seconds() / 3600,
+                "active_hours": self._calculate_active_hours(snapshots),
+                "category_distribution": category_counts,
+                "focus_distribution": focus_distribution,
+                "average_focus_score": round(avg_focus_score, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting aggregate metrics: {e}")
+            return {} 

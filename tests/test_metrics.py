@@ -9,6 +9,11 @@ def mock_db():
     """Create a mock database manager"""
     db = Mock(spec=DatabaseManager)
     
+    # Add methods to spec
+    db.__class__.get_snapshots_between = DatabaseManager.get_snapshots_between
+    db.__class__.get_activities_between = DatabaseManager.get_activities_between
+    db.__class__.get_focus_states_between = DatabaseManager.get_focus_states_between
+    
     # Mock snapshot data
     db.get_snapshots_between.return_value = [
         {
