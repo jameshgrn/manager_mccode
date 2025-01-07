@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import sqlite3
 from pathlib import Path
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import sys
 import json
 from manager_mccode.models.screen_summary import ScreenSummary
@@ -86,14 +86,14 @@ class DatabaseManager:
         Args:
             db_path: Path to database file, or ":memory:" for in-memory database
         """
-        self.db_path = db_path or settings.DEFAULT_DB_PATH
+        self.db_path = db_path or "manager_mccode.db"  # Changed from settings.DEFAULT_DB_PATH
         logger.info(f"Initialized DatabaseManager with db_path: {self.db_path}")
-        self.conn = None
-        self.initialize()
+        self.conn = self.get_connection()  # Initialize connection first
+        self.initialize()  # Then initialize schema
 
     def get_connection(self):
         """Get a database connection, creating it if needed"""
-        if self.conn is None:
+        try:
             # Create new connection if none exists
             if self.db_path != ":memory:":
                 db_path = Path(self.db_path)
@@ -102,17 +102,21 @@ class DatabaseManager:
             else:
                 db_path_str = self.db_path
 
-            self.conn = sqlite3.connect(db_path_str)
+            conn = sqlite3.connect(db_path_str)
             # Enable foreign key support
-            self.conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA foreign_keys = ON")
             # Enable WAL mode for better concurrency
-            self.conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA journal_mode = WAL")
             # Set synchronous mode for better performance while maintaining safety
-            self.conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             # Enable memory-mapped I/O for better performance
-            self.conn.execute("PRAGMA mmap_size = 30000000000")
+            conn.execute("PRAGMA mmap_size = 30000000000")
 
-        return self.conn
+            return conn
+
+        except Exception as e:
+            logger.error(f"Failed to create database connection: {e}")
+            raise DatabaseError(f"Connection failed: {e}")
 
     def _optimize_database(self) -> None:
         """Run database optimizations"""
@@ -171,35 +175,59 @@ class DatabaseManager:
             logger.error(f"Failed to clean up old data: {e}")
             raise DatabaseError(f"Data cleanup failed: {e}")
 
-    def get_database_stats(self) -> Dict:
+    def get_database_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         try:
-            cursor = self.conn.execute("""
+            cursor = self.conn.cursor()
+            
+            # Get table statistics
+            cursor.execute("""
                 SELECT 
-                    COUNT(*) as total_records,
-                    MIN(timestamp) as earliest_record,
-                    MAX(timestamp) as latest_record
-                FROM activity_snapshots
+                    name,
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
+                FROM sqlite_master m
+                WHERE type='table' AND name NOT LIKE 'sqlite_%'
             """)
-            snapshot_stats = dict(zip(['total_records', 'earliest_record', 'latest_record'], cursor.fetchone()))
             
-            # Get table info
-            cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in cursor.fetchall()]
+            tables = {}
+            for table_name, index_count, trigger_count in cursor.fetchall():
+                # Get row count for each table
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = cursor.fetchone()[0]
+                
+                tables[table_name] = {
+                    "row_count": row_count,
+                    "index_count": index_count,
+                    "trigger_count": trigger_count
+                }
             
-            # Get database size (0 for in-memory)
-            db_size = 0
-            if self.db_path != ":memory:":
-                db_size = Path(self.db_path).stat().st_size / (1024 * 1024)  # Convert to MB
+            # Get time range info
+            cursor.execute("""
+                SELECT 
+                    MIN(timestamp) as oldest,
+                    MAX(timestamp) as newest,
+                    COUNT(*) as total
+                FROM screen_summaries
+            """)
+            time_range = dict(zip(['oldest', 'newest', 'total_records'], cursor.fetchone()))
+            
+            # Get database size
+            cursor.execute("PRAGMA page_size")
+            page_size = cursor.fetchone()[0]
+            cursor.execute("PRAGMA page_count")
+            page_count = cursor.fetchone()[0]
+            db_size_mb = (page_size * page_count) / (1024 * 1024)
             
             return {
-                'tables': tables,
-                'database_size_mb': db_size,
-                'time_range': snapshot_stats
+                "tables": tables,
+                "time_range": time_range,
+                "database_size_mb": db_size_mb
             }
+            
         except Exception as e:
             logger.error(f"Failed to get database stats: {e}")
-            raise DatabaseError(f"Stats collection failed: {e}")
+            raise
 
     def verify_database_integrity(self) -> bool:
         """Run integrity check on the database
@@ -229,59 +257,39 @@ class DatabaseManager:
             logger.error(f"Failed to verify database integrity: {e}")
             raise DatabaseError(f"Integrity check failed: {e}")
 
-    def initialize(self):
-        """Initialize database tables and indexes"""
+    def initialize(self) -> None:
+        """Initialize the database schema"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            cursor = self.conn.cursor()
             
-            # Drop existing tables if they exist
-            cursor.execute("DROP TABLE IF EXISTS activities")
-            cursor.execute("DROP TABLE IF EXISTS focus_states")
-            cursor.execute("DROP TABLE IF EXISTS activity_snapshots")
-            
-            # Create activity_snapshots table
+            # Create screen summaries table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS activity_snapshots (
+                CREATE TABLE IF NOT EXISTS screen_summaries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME NOT NULL,
-                    summary TEXT,
-                    focus_score REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    timestamp TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    focus_state TEXT,
+                    focus_confidence REAL,
+                    activities TEXT,  -- JSON array
+                    context TEXT,    -- JSON object
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # Create activities table
+            # Create task segments table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS activities (
+                CREATE TABLE IF NOT EXISTS task_segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id INTEGER,
-                    name TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    task_name TEXT NOT NULL,
                     category TEXT,
-                    attention_level REAL,
-                    context_switches TEXT,
-                    workspace_organization TEXT,
-                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+                    context TEXT,  -- JSON object
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # Create focus_states table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS focus_states (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id INTEGER,
-                    state_type TEXT NOT NULL,
-                    confidence REAL,
-                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Create indexes
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id)")
-            
-            conn.commit()
+            self.conn.commit()
             logger.info("Database initialization complete")
             
         except Exception as e:
