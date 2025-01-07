@@ -12,6 +12,8 @@ from rich.text import Text
 from datetime import datetime, timedelta
 import logging
 import asyncio
+import uvicorn
+from manager_mccode.config.settings import Settings
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -319,6 +321,31 @@ def optimize():
     except Exception as e:
         logger.error(f"Optimization failed: {e}")
         sys.exit(1)
+
+@cli.command()
+@click.option('--host', default='127.0.0.1', help='Host to bind to')
+@click.option('--port', default=8000, help='Port to bind to')
+@click.option('--reload', is_flag=True, help='Enable auto-reload')
+def web(host: str, port: int, reload: bool):
+    """Start the web interface"""
+    settings = Settings()
+    
+    # Ensure template and static directories exist
+    web_dir = Path(__file__).parent.parent / 'web'
+    templates_dir = web_dir / 'templates'
+    static_dir = web_dir / 'static'
+    
+    if not all(d.exists() for d in [templates_dir, static_dir]):
+        click.echo("Error: Web interface directories not found")
+        return
+    
+    click.echo(f"Starting web interface on http://{host}:{port}")
+    uvicorn.run(
+        "manager_mccode.web.app:app",
+        host=host,
+        port=port,
+        reload=reload
+    )
 
 if __name__ == '__main__':
     cli() 

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,7 +23,7 @@ db = DatabaseManager(settings.DEFAULT_DB_PATH)
 metrics = MetricsCollector(db)
 
 @app.get("/")
-async def dashboard(request):
+async def dashboard(request: Request):
     """Main dashboard view"""
     try:
         # Get today's metrics
@@ -65,4 +65,19 @@ async def get_metrics_range(start: str, end: str):
         raise HTTPException(status_code=400, detail="Invalid date format")
     except Exception as e:
         logger.error(f"Error getting metrics range: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add error handlers
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "Not found"}
+    )
+
+@app.exception_handler(500)
+async def server_error_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)}
+    ) 
