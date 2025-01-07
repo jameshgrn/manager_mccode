@@ -23,21 +23,23 @@ class BatchQueueError(BatchError):
 class BatchProcessor:
     def __init__(
         self,
-        batch_size: Optional[int] = None,
-        batch_interval_seconds: Optional[int] = None
+        batch_size: int = settings.DEFAULT_BATCH_SIZE,
+        batch_interval_seconds: int = settings.DEFAULT_BATCH_INTERVAL_SECONDS
     ):
-        self.batch_size = batch_size or settings.DEFAULT_BATCH_SIZE
-        self.batch_interval = batch_interval_seconds or settings.DEFAULT_BATCH_INTERVAL_SECONDS
-        self.pending_screenshots = {}
-        self.last_batch_time = datetime.now()
+        self.batch_size = batch_size
+        self.batch_interval = batch_interval_seconds
+        self.pending_screenshots = {}  # timestamp -> path mapping
+        self.last_batch_time = None  # Set to None initially to trigger immediate processing
+        self.is_processing = False
+        self.shutdown_requested = False
         self.model = self._initialize_model()
         
-        # Check for existing screenshots on startup
-        self._process_existing_screenshots()
+        # Don't create task in __init__, wait for async initialization
+        self._initialized = False
         
         logger.info(
-            f"Initialized BatchProcessor with size={self.batch_size}, "
-            f"interval={self.batch_interval}s"
+            f"Initialized BatchProcessor with size={batch_size}, "
+            f"interval={batch_interval_seconds}s"
         )
 
     def _initialize_model(self) -> genai.GenerativeModel:
@@ -66,6 +68,11 @@ class BatchProcessor:
 
     def is_batch_ready(self) -> bool:
         """Check if we have enough screenshots to process a batch"""
+        # During startup, process any pending screenshots immediately
+        if self.last_batch_time is None:
+            return bool(self.pending_screenshots)
+            
+        # Otherwise use normal batch criteria
         return (
             len(self.pending_screenshots) >= self.batch_size or
             (datetime.now() - self.last_batch_time).total_seconds() >= self.batch_interval
@@ -76,61 +83,39 @@ class BatchProcessor:
         if not self.pending_screenshots:
             return []
 
+        self.is_processing = True
         try:
-            # Get timestamps sorted by time
+            # Sort timestamps to process oldest first
             timestamps = sorted(self.pending_screenshots.keys())
             batch_timestamps = timestamps[:self.batch_size]
             
-            # Process each screenshot
             summaries = []
             for timestamp in batch_timestamps:
-                screenshot_path = self.pending_screenshots[timestamp]
+                if self.shutdown_requested:  # Check for shutdown
+                    break
+                    
                 try:
-                    # Load image
-                    try:
-                        with open(screenshot_path, 'rb') as img_file:
-                            image_part = {
-                                "mime_type": "image/jpeg",
-                                "data": img_file.read()
-                            }
-                    except Exception as e:
-                        logger.error(f"Failed to read image {screenshot_path}: {e}")
+                    screenshot_path = self.pending_screenshots[timestamp]
+                    if not Path(screenshot_path).exists():
+                        logger.warning(f"Screenshot not found: {screenshot_path}")
                         continue
-
-                    # Generate analysis with retry logic
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            response = await self._generate_analysis([image_part])
-                            if response and response.text:
-                                result = self._parse_response(response.text)
-                                summary = self._create_summary(result, timestamp)
-                                if summary:
-                                    summaries.append(summary)
-                                break
-                        except Exception as e:
-                            if attempt == max_retries - 1:
-                                logger.error(f"Failed to analyze after {max_retries} attempts: {e}")
-                            else:
-                                logger.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
-                                await asyncio.sleep(1)
-
-                finally:
-                    # Clean up the screenshot
-                    try:
-                        Path(screenshot_path).unlink(missing_ok=True)
-                    except Exception as e:
-                        logger.error(f"Failed to clean up screenshot {screenshot_path}: {e}")
-
-            # Remove processed timestamps
-            for timestamp in batch_timestamps:
-                del self.pending_screenshots[timestamp]
-
+                        
+                    summary = await self.analyze_screenshot(screenshot_path, timestamp)
+                    if summary:
+                        summaries.append(summary)
+                        
+                    # Remove processed screenshot from pending
+                    del self.pending_screenshots[timestamp]
+                except KeyError:
+                    logger.warning(f"Screenshot missing from pending dict: {timestamp}")
+                except Exception as e:
+                    logger.error(f"Error processing screenshot: {e}")
+                    
             return summaries
-
-        except Exception as e:
-            logger.error(f"Batch processing error: {e}")
-            raise BatchProcessingError(f"Failed to process batch: {e}")
+            
+        finally:
+            self.is_processing = False
+            self.last_batch_time = datetime.now()
 
     async def _generate_analysis(self, image_parts: List[Dict]) -> genai.types.GenerateContentResponse:
         """Generate analysis from images using Gemini
@@ -271,9 +256,16 @@ class BatchProcessor:
             except Exception as e:
                 logger.error(f"Failed to clean up screenshot {path}: {e}") 
 
-    def _process_existing_screenshots(self):
-        """Process any screenshots that exist in the temp directory"""
+    async def initialize(self):
+        """Async initialization"""
+        if not self._initialized:
+            await self._init_process_existing()
+            self._initialized = True
+
+    async def _init_process_existing(self):
+        """Initialize and process any existing screenshots"""
         try:
+            # Find existing screenshots
             temp_dir = Path("temp_screenshots")
             if not temp_dir.exists():
                 return
@@ -292,10 +284,80 @@ class BatchProcessor:
                 creation_time = datetime.fromtimestamp(screenshot.stat().st_ctime)
                 self.pending_screenshots[creation_time] = str(screenshot)
             
-            # Process immediately if we have enough for a batch
-            if len(self.pending_screenshots) >= self.batch_size:
-                logger.info("Processing existing screenshots batch")
-                asyncio.create_task(self.process_batch())
+            # Process immediately
+            if self.pending_screenshots:
+                logger.info("Processing existing screenshots immediately")
+                await self.process_batch()
                 
         except Exception as e:
-            logger.error(f"Error processing existing screenshots: {e}") 
+            logger.error(f"Error processing existing screenshots: {e}")
+
+    async def cleanup(self) -> None:
+        """Clean up resources during shutdown"""
+        try:
+            self.shutdown_requested = True  # Set shutdown flag
+            
+            # Wait for current processing to finish
+            while self.is_processing:
+                await asyncio.sleep(0.1)
+            
+            # Clean up any pending screenshots
+            for path in self.pending_screenshots.values():
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception as e:
+                    logger.error(f"Failed to clean up screenshot {path}: {e}")
+            
+            # Clear the pending screenshots
+            self.pending_screenshots.clear()
+            
+            logger.info("Batch processor cleanup complete")
+            
+        except Exception as e:
+            logger.error(f"Error during batch processor cleanup: {e}")
+            raise BatchError(f"Cleanup failed: {e}") 
+
+    async def analyze_screenshot(self, screenshot_path: str, timestamp: datetime) -> Optional[ScreenSummary]:
+        """Analyze a single screenshot
+        
+        Args:
+            screenshot_path: Path to the screenshot file
+            timestamp: When the screenshot was taken
+            
+        Returns:
+            Optional[ScreenSummary]: Analysis results or None if analysis fails
+        """
+        try:
+            # Load image
+            with open(screenshot_path, 'rb') as img_file:
+                image_part = {
+                    "mime_type": "image/png",
+                    "data": img_file.read()
+                }
+
+            # Generate analysis with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = await self._generate_analysis([image_part])
+                    if response and response.text:
+                        result = self._parse_response(response.text)
+                        return self._create_summary(result, timestamp)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to analyze after {max_retries} attempts: {e}")
+                    else:
+                        logger.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
+                        await asyncio.sleep(1)
+            
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to analyze screenshot {screenshot_path}: {e}")
+            return None
+        finally:
+            # Clean up the screenshot
+            try:
+                Path(screenshot_path).unlink(missing_ok=True)
+            except Exception as e:
+                logger.error(f"Failed to clean up screenshot {screenshot_path}: {e}") 

@@ -305,3 +305,11 @@ class GeminiAnalyzer:
             ])
             
         return recommendations 
+
+    async def cleanup(self) -> None:
+        """Cleanup resources during shutdown"""
+        try:
+            # No resources to clean up currently, but method needed for interface consistency
+            logger.info("Analyzer cleanup complete")
+        except Exception as e:
+            logger.error(f"Error during analyzer cleanup: {e}") 

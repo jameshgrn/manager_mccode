@@ -14,7 +14,7 @@ import logging
 import asyncio
 import uvicorn
 from manager_mccode.config.settings import Settings
-from manager_mccode.config.config import config
+from manager_mccode.config.settings import settings
 import signal
 
 # Set up logging
@@ -110,7 +110,7 @@ def start(debug):
 def stop():
     """Stop the Manager McCode service"""
     try:
-        pid_file = config.pid_file
+        pid_file = settings.DATA_DIR / "manager_mccode.pid"
         if pid_file.exists():
             pid = int(pid_file.read_text().strip())
             os.kill(pid, signal.SIGTERM)
@@ -125,7 +125,7 @@ def stop():
 def status():
     """Check service status"""
     try:
-        pid_file = config.pid_file
+        pid_file = settings.DATA_DIR / "manager_mccode.pid"
         if not pid_file.exists():
             console.print("[yellow]Service is not running[/yellow]")
             return
@@ -146,37 +146,32 @@ def inspect():
     """Inspect recent activity summaries"""
     try:
         db = DatabaseManager()
-        summaries = db.get_recent_summaries(limit=10)
+        summaries = db.get_recent_summaries(hours=24)  # Show last 24 hours of summaries
         
         if not summaries:
-            console.print("[yellow]No recent activities recorded[/yellow]")
+            console.print("[yellow]No recent summaries found[/yellow]")
             return
-
-        # Show summaries in a table
-        table = Table(title="Recent Activity Summaries")
-        table.add_column("Time", style="cyan")
-        table.add_column("Activities", style="green")
-        table.add_column("Focus States", style="yellow")
-        table.add_column("Summary", style="white")
-
-        for summary in summaries:
-            # Format timestamp
-            timestamp = datetime.fromisoformat(summary['timestamp'])
-            time_str = timestamp.strftime("%H:%M:%S")
             
-            # Format activities and focus states
-            activities_str = ", ".join(summary['activities']) if summary['activities'] else "None"
-            focus_states_str = ", ".join(summary['focus_states']) if summary['focus_states'] else "None"
+        # Create a table for display
+        table = Table(title="Recent Activity Summaries")
+        table.add_column("Time", justify="left", style="cyan")
+        table.add_column("Summary", justify="left", style="green")
+        table.add_column("Activities", justify="left", style="yellow")
+        
+        for summary in summaries:
+            activities = "\n".join([
+                f"• {a.name} ({a.category})" 
+                for a in summary.activities
+            ])
             
             table.add_row(
-                time_str,
-                activities_str,
-                focus_states_str,
-                summary['summary']
+                summary.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                summary.summary,
+                activities
             )
-
+            
         console.print(table)
-
+        
     except Exception as e:
         logger.error(f"Failed to inspect summaries: {e}")
         console.print(f"[red]Error inspecting summaries: {e}[/red]")
@@ -477,6 +472,61 @@ def focus(hours):
     except Exception as e:
         logger.error(f"Failed to analyze focus patterns: {e}")
         console.print(f"[red]Error analyzing focus patterns: {e}[/red]")
+
+@cli.command()
+def debug_db():
+    """Debug database contents"""
+    try:
+        db = DatabaseManager()
+        conn = db.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Check activity_snapshots
+            cursor.execute("SELECT COUNT(*) FROM activity_snapshots")
+            snapshot_count = cursor.fetchone()[0]
+            console.print(f"[cyan]Total snapshots:[/cyan] {snapshot_count}")
+            
+            # Get most recent snapshots
+            cursor.execute("""
+                SELECT id, timestamp, summary 
+                FROM activity_snapshots 
+                ORDER BY timestamp DESC 
+                LIMIT 5
+            """)
+            recent = cursor.fetchall()
+            
+            if recent:
+                console.print("\n[cyan]Most recent snapshots:[/cyan]")
+                for row in recent:
+                    console.print(f"ID: {row[0]}, Time: {row[1]}")
+                    console.print(f"Summary: {row[2][:100]}...")
+            
+            # Check activities
+            cursor.execute("SELECT COUNT(*) FROM activities")
+            activity_count = cursor.fetchone()[0]
+            console.print(f"\n[cyan]Total activities:[/cyan] {activity_count}")
+            
+            # Get activity distribution
+            cursor.execute("""
+                SELECT category, COUNT(*) 
+                FROM activities 
+                GROUP BY category
+            """)
+            categories = cursor.fetchall()
+            
+            if categories:
+                console.print("\n[cyan]Activity categories:[/cyan]")
+                for cat, count in categories:
+                    console.print(f"{cat}: {count}")
+                    
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to debug database: {e}")
+        console.print(f"[red]Error debugging database: {e}[/red]")
+        sys.exit(1)
 
 if __name__ == '__main__':
     cli() 

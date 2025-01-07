@@ -91,19 +91,33 @@ class ServiceRunner:
     
     async def cleanup(self):
         """Ensure all resources are properly cleaned up"""
-        tasks = [
-            self.image_manager.cleanup(),
-            self.batch_processor.cleanup(),
-            self.analyzer.cleanup(),
-            self.db.cleanup()
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        cleanup_tasks = []
+        
+        # Add cleanup tasks
+        if hasattr(self.image_manager, 'cleanup'):
+            cleanup_tasks.append(self.image_manager.cleanup())
+        if hasattr(self.batch_processor, 'cleanup'):
+            cleanup_tasks.append(self.batch_processor.cleanup())
+        if hasattr(self.analyzer, 'cleanup'):
+            cleanup_tasks.append(self.analyzer.cleanup())
+        if hasattr(self.db, 'cleanup'):
+            cleanup_tasks.append(self.db.cleanup())
+
+        if cleanup_tasks:
+            try:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                logger.info("All cleanup tasks completed")
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
     
     async def run(self):
         """Run the service"""
         logger.info("Starting Manager McCode service...")
         self._setup_signal_handlers()
         self.running = True
+        
+        # Initialize batch processor
+        await self.batch_processor.initialize()
         
         try:
             while self.running:
@@ -119,7 +133,11 @@ class ServiceRunner:
                     if self.batch_processor.is_batch_ready():
                         summaries = await self.batch_processor.process_batch()
                         if summaries:
-                            await asyncio.to_thread(self.db.store_summaries, summaries)
+                            try:
+                                await asyncio.to_thread(self.db.store_summaries, summaries)
+                            except Exception as e:
+                                logger.error(f"Failed to store summaries: {e}")
+                                # Don't increment error count for storage failures
                     
                     # Periodic cleanup
                     await self._maybe_cleanup()
@@ -154,16 +172,18 @@ class ServiceRunner:
             if self.running:  # If we didn't already shutdown
                 await self.shutdown()
     
-    async def _maybe_cleanup(self):
-        """Perform periodic cleanup if needed"""
-        now = datetime.now()
-        if (not self.last_cleanup_time or 
-            (now - self.last_cleanup_time).total_seconds() > self.CLEANUP_INTERVAL_HOURS * 3600):
-            
+    async def _maybe_cleanup(self) -> None:
+        """Run periodic cleanup tasks"""
+        try:
             logger.info("Running periodic cleanup...")
-            await self.image_manager.cleanup_old_images()
-            await asyncio.to_thread(self.db.cleanup_old_data)
-            self.last_cleanup_time = now
+            await self.db.cleanup_old_data()
+            
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+            self.error_count += 1
+            if self.error_count >= self.MAX_ERRORS:
+                logger.critical("Too many errors, initiating shutdown...")
+                await self.shutdown()
 
 class ServiceInitError(RunnerError):
     """Exception raised when service initialization fails"""

@@ -10,21 +10,14 @@ from manager_mccode.config.settings import settings
 from manager_mccode.services.analyzer import GeminiAnalyzer
 from manager_mccode.models.focus_session import FocusSession, FocusTrigger
 from manager_mccode.services.errors import DatabaseError
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 MIGRATIONS = [
     """
-    -- Drop existing tables
-    DROP TABLE IF EXISTS focus_triggers;
-    DROP TABLE IF EXISTS focus_sessions;
-    DROP TABLE IF EXISTS focus_states;
-    DROP TABLE IF EXISTS activities;
-    DROP TABLE IF EXISTS activity_snapshots;
-    DROP TABLE IF EXISTS environments;
-
     -- Core activity tracking
-    CREATE TABLE activity_snapshots (
+    CREATE TABLE IF NOT EXISTS activity_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TIMESTAMP NOT NULL,
         summary TEXT NOT NULL,
@@ -35,7 +28,7 @@ MIGRATIONS = [
     );
 
     -- Activity details for each snapshot
-    CREATE TABLE activities (
+    CREATE TABLE IF NOT EXISTS activities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
         name TEXT NOT NULL,
@@ -48,7 +41,7 @@ MIGRATIONS = [
     );
 
     -- Focus state tracking
-    CREATE TABLE focus_states (
+    CREATE TABLE IF NOT EXISTS focus_states (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
         state_type VARCHAR(50) NOT NULL,
@@ -58,7 +51,7 @@ MIGRATIONS = [
     );
 
     -- Focus session tracking
-    CREATE TABLE focus_sessions (
+    CREATE TABLE IF NOT EXISTS focus_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         start_time TIMESTAMP NOT NULL,
         end_time TIMESTAMP,
@@ -70,7 +63,7 @@ MIGRATIONS = [
     );
 
     -- Focus trigger tracking
-    CREATE TABLE focus_triggers (
+    CREATE TABLE IF NOT EXISTS focus_triggers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id INTEGER NOT NULL,
         trigger_time TIMESTAMP NOT NULL,
@@ -81,14 +74,14 @@ MIGRATIONS = [
     );
 
     -- Environment details for each snapshot
-    CREATE TABLE environments (
+    CREATE TABLE IF NOT EXISTS environments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
         environment TEXT NOT NULL,
         FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
-    -- Create indexes
+    -- Create indexes if they don't exist
     CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp);
     CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id);
     CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id);
@@ -107,154 +100,196 @@ class QueryError(DatabaseError):
 
 class DatabaseManager:
     def __init__(self, db_path=None):
-        """Initialize database manager
-        
-        Args:
-            db_path: Path to database file, or ":memory:" for in-memory database
-        """
+        """Initialize database manager"""
         self.db_path = db_path or "manager_mccode.db"
         logger.info(f"Initialized DatabaseManager with db_path: {self.db_path}")
-        self.conn = self.get_connection()
-        self.initialize()  # Ensure tables are created
-        self.conn.commit()  # Commit any initialization changes
+        self.initialize()
+
+    def initialize(self):
+        """Initialize database schema"""
+        try:
+            conn = self.get_connection()
+            try:
+                for migration in MIGRATIONS:
+                    conn.executescript(migration)
+                conn.commit()
+                logger.info("Database initialization complete")
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            raise DatabaseError(f"Failed to initialize database: {e}")
 
     def get_connection(self):
-        """Get a database connection, creating it if needed"""
+        """Get a thread-local database connection"""
+        # Create new connection for each thread
+        if self.db_path != ":memory:":
+            db_path = Path(self.db_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            db_path_str = str(db_path)
+        else:
+            db_path_str = self.db_path
+
+        conn = sqlite3.connect(db_path_str)
+        conn.execute("PRAGMA foreign_keys = ON")
+        if self.db_path != ":memory:":
+            conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        return conn
+
+    async def cleanup_old_data(self, days: Optional[int] = None) -> Tuple[int, int]:
+        """Clean up old data from the database"""
         try:
-            # Create new connection if none exists
+            retention_days = days or settings.DATA_RETENTION_DAYS
+            cutoff_date = datetime.now() - timedelta(days=retention_days)
+            
+            # Run all database operations in a thread
+            return await asyncio.to_thread(self._do_cleanup_with_connection, cutoff_date)
+        except Exception as e:
+            logger.error(f"Failed to clean up old data: {e}")
+            raise DatabaseError(f"Data cleanup failed: {e}")
+
+    def _do_cleanup_with_connection(self, cutoff_date: datetime) -> Tuple[int, int]:
+        """Run cleanup with a fresh connection in the worker thread"""
+        conn = self.get_connection()
+        try:
+            return self._do_cleanup(conn, cutoff_date)
+        finally:
+            conn.close()
+
+    def _do_cleanup(self, conn: sqlite3.Connection, cutoff_date: datetime) -> Tuple[int, int]:
+        """Internal method to perform the actual cleanup"""
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            
+            # Get initial size
+            initial_size = 0
             if self.db_path != ":memory:":
-                db_path = Path(self.db_path)
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-                db_path_str = str(db_path)
+                initial_size = Path(self.db_path).stat().st_size
+
+            # Delete old records
+            cursor = conn.execute("""
+                DELETE FROM activity_snapshots 
+                WHERE timestamp < ?
+            """, [cutoff_date])
+            deleted = cursor.rowcount
+
+            conn.commit()
+
+            # Get final size
+            final_size = 0
+            if self.db_path != ":memory:":
+                final_size = Path(self.db_path).stat().st_size
+                space_reclaimed = initial_size - final_size
             else:
-                db_path_str = self.db_path
+                space_reclaimed = 0
 
-            conn = sqlite3.connect(db_path_str)
-            # Enable foreign key support
-            conn.execute("PRAGMA foreign_keys = ON")
-            # Enable WAL mode for better concurrency
-            if self.db_path != ":memory:":
-                conn.execute("PRAGMA journal_mode = WAL")
-            # Set synchronous mode for better performance while maintaining safety
-            conn.execute("PRAGMA synchronous = NORMAL")
-
-            return conn
+            return deleted, space_reclaimed
 
         except Exception as e:
-            logger.error(f"Failed to create database connection: {e}")
-            raise DatabaseError(f"Connection failed: {e}")
+            conn.rollback()
+            raise e
 
-    def _optimize_database(self) -> None:
+    async def cleanup(self) -> None:
+        """Cleanup database resources during shutdown"""
+        try:
+            # Run final cleanup of old data
+            await self.cleanup_old_data()
+            
+            # Run optimizations in a thread
+            await asyncio.to_thread(self._optimize_database_with_connection)
+                
+            logger.info("Database cleanup complete")
+        except Exception as e:
+            logger.error(f"Error during database cleanup: {e}")
+            raise DatabaseError(f"Cleanup failed: {e}")
+
+    def _optimize_database_with_connection(self) -> None:
+        """Run optimizations with a fresh connection"""
+        conn = self.get_connection()
+        try:
+            self._optimize_database(conn)
+        finally:
+            conn.close()
+
+    def _optimize_database(self, conn: sqlite3.Connection) -> None:
         """Run database optimizations"""
         try:
             logger.info("Running database optimizations...")
             
             # Skip VACUUM for in-memory databases
             if self.db_path != ":memory:":
-                self.conn.execute("PRAGMA optimize")
-                self.conn.execute("ANALYZE")
-                self.conn.execute("VACUUM")
+                conn.execute("PRAGMA optimize")
+                conn.execute("ANALYZE")
+                conn.execute("VACUUM")
             else:
                 # Just run basic optimizations for in-memory
-                self.conn.execute("PRAGMA optimize")
-                self.conn.execute("ANALYZE")
+                conn.execute("PRAGMA optimize")
+                conn.execute("ANALYZE")
             
             logger.info("Database optimizations complete")
         except Exception as e:
             logger.error(f"Failed to optimize database: {e}")
             raise DatabaseError(f"Optimization failed: {e}")
 
-    def cleanup_old_data(self, days: Optional[int] = None) -> Tuple[int, int]:
-        """Remove data older than specified days"""
-        retention_days = days or settings.DB_RETENTION_DAYS
-        cutoff = datetime.now() - timedelta(days=retention_days)
-
-        try:
-            # Start transaction
-            self.conn.execute("BEGIN TRANSACTION")
-
-            # Get initial size (skip for in-memory database)
-            initial_size = 0
-            if self.db_path != ":memory:":
-                initial_size = Path(self.db_path).stat().st_size
-
-            # Delete old records
-            cursor = self.conn.execute("""
-                DELETE FROM activity_snapshots 
-                WHERE timestamp < ?
-            """, [cutoff])
-            deleted = cursor.rowcount
-
-            # Get final size (skip for in-memory database)
-            final_size = 0
-            if self.db_path != ":memory:":
-                self.conn.commit()  # Commit to get accurate size
-                final_size = Path(self.db_path).stat().st_size
-                space_reclaimed = initial_size - final_size
-            else:
-                space_reclaimed = 0  # Can't measure for in-memory
-
-            return deleted, space_reclaimed
-
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Failed to clean up old data: {e}")
-            raise DatabaseError(f"Data cleanup failed: {e}")
-
     def get_database_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         try:
-            cursor = self.conn.cursor()
-            
-            # Get table statistics
-            cursor.execute("""
-                SELECT
-                    name,
-                    (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
-                    (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
-                FROM sqlite_master m
-                WHERE type='table' AND name NOT LIKE 'sqlite_%'
-            """)
-            
-            tables = {}
-            for table_name, index_count, trigger_count in cursor.fetchall():
-                # Get row count for each table
-                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-                row_count = cursor.fetchone()[0]
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
                 
-                tables[table_name] = {
-                    "row_count": row_count,
-                    "index_count": index_count,
-                    "trigger_count": trigger_count
+                # Get table statistics
+                cursor.execute("""
+                    SELECT
+                        name,
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
+                    FROM sqlite_master m
+                    WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                """)
+                
+                tables = {}
+                for table_name, index_count, trigger_count in cursor.fetchall():
+                    # Get row count for each table
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    row_count = cursor.fetchone()[0]
+                    
+                    tables[table_name] = {
+                        "row_count": row_count,
+                        "index_count": index_count,
+                        "trigger_count": trigger_count
+                    }
+                
+                # Get time range info from activity_snapshots
+                cursor.execute("""
+                    SELECT
+                        MIN(timestamp) as oldest,
+                        MAX(timestamp) as newest,
+                        COUNT(*) as total
+                    FROM activity_snapshots
+                """)
+                
+                time_range = cursor.fetchone()
+                
+                # Handle in-memory database size
+                if self.db_path == ":memory:":
+                    db_size = 0
+                else:
+                    db_size = Path(self.db_path).stat().st_size / (1024 * 1024)
+                
+                return {
+                    "tables": tables,
+                    "database_size_mb": db_size,
+                    "time_range": {
+                        "oldest": time_range[0] if time_range[0] else None,
+                        "newest": time_range[1] if time_range[1] else None,
+                        "total_records": time_range[2]
+                    }
                 }
-            
-            # Get time range info from activity_snapshots
-            cursor.execute("""
-                SELECT
-                    MIN(timestamp) as oldest,
-                    MAX(timestamp) as newest,
-                    COUNT(*) as total
-                FROM activity_snapshots
-            """)
-            
-            time_range = cursor.fetchone()
-            
-            # Handle in-memory database size
-            if self.db_path == ":memory:":
-                db_size = 0
-            else:
-                db_size = Path(self.db_path).stat().st_size / (1024 * 1024)
-            
-            return {
-                "tables": tables,
-                "database_size_mb": db_size,
-                "time_range": {
-                    "oldest": time_range[0] if time_range[0] else None,
-                    "newest": time_range[1] if time_range[1] else None,
-                    "total_records": time_range[2]
-                }
-            }
-            
+            finally:
+                conn.close()
+                
         except Exception as e:
             logger.error(f"Failed to get database stats: {e}")
             raise DatabaseError(f"Failed to get database stats: {e}")
@@ -286,22 +321,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to verify database integrity: {e}")
             raise DatabaseError(f"Integrity check failed: {e}")
-
-    def initialize(self) -> None:
-        """Initialize the database schema"""
-        try:
-            cursor = self.conn.cursor()
-            
-            # Execute the migrations in order
-            cursor.executescript(MIGRATIONS[0])
-            
-            self.conn.commit()
-            logger.info("Database initialization complete")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            self.conn.rollback()  # Rollback on error
-            raise DatabaseError(f"Database initialization failed: {e}")
 
     def _run_migrations(self):
         """Run any pending database migrations"""
@@ -563,36 +582,78 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Schema verification failed: {e}") 
 
-    def get_recent_summaries(self, limit: int = 10) -> List[Dict]:
-        """Get recent summaries from the database"""
+    def get_recent_summaries(self, hours: int = 24) -> List[ScreenSummary]:
+        """Get screen summaries from the last N hours"""
         try:
-            cursor = self.conn.execute("""
-                SELECT 
-                    s.id,
-                    datetime(s.timestamp) as timestamp,
-                    s.summary,
-                    s.focus_score,
-                    f.state_type as focus_state,
-                    f.confidence as focus_confidence
-                FROM activity_snapshots s
-                LEFT JOIN focus_states f ON s.id = f.snapshot_id
-                ORDER BY s.timestamp DESC
-                LIMIT ?
-            """, [limit])
-            
-            rows = cursor.fetchall()
-            return [{
-                'id': row[0],
-                'timestamp': datetime.fromisoformat(row[1]),  # Convert to datetime
-                'summary': row[2],
-                'focus_score': row[3],
-                'focus_state': row[4],
-                'focus_confidence': row[5]
-            } for row in rows]
-            
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                
+                # Calculate cutoff time
+                cutoff = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
+                logger.debug(f"Getting summaries since: {cutoff}")
+                
+                # Get summaries
+                cursor.execute("""
+                    SELECT COUNT(*) FROM activity_snapshots
+                    WHERE timestamp >= ?
+                """, [cutoff])
+                count = cursor.fetchone()[0]
+                logger.debug(f"Found {count} summaries in time range")
+                
+                cursor.execute("""
+                    SELECT * FROM activity_snapshots
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp DESC
+                """, [cutoff])
+                
+                summaries = []
+                for row in cursor.fetchall():
+                    logger.debug(f"Processing snapshot {row[0]} from {row[1]}")
+                    
+                    # Get associated activities
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM activities
+                        WHERE snapshot_id = ?
+                    """, [row[0]])
+                    activity_count = cursor.fetchone()[0]
+                    logger.debug(f"Found {activity_count} activities for snapshot {row[0]}")
+                    
+                    cursor.execute("""
+                        SELECT * FROM activities
+                        WHERE snapshot_id = ?
+                    """, [row[0]])
+                    
+                    activities = []
+                    for activity_row in cursor.fetchall():
+                        activity = Activity(
+                            name=activity_row[2],
+                            category=activity_row[3],
+                            purpose=activity_row[4],
+                            focus_indicators=FocusIndicators(
+                                attention_level=activity_row[5],
+                                context_switches=activity_row[6],
+                                workspace_organization=activity_row[7]
+                            )
+                        )
+                        activities.append(activity)
+                    
+                    summary = ScreenSummary(
+                        timestamp=datetime.fromisoformat(row[1].replace(' ', 'T')),
+                        summary=row[2],
+                        activities=activities
+                    )
+                    summaries.append(summary)
+                
+                logger.info(f"Retrieved {len(summaries)} summaries from database")
+                return summaries
+                
+            finally:
+                conn.close()
+                
         except Exception as e:
             logger.error(f"Error getting recent summaries: {e}")
-            raise DatabaseError(f"Failed to get recent summaries: {e}") 
+            raise DatabaseError(f"Failed to get recent summaries: {e}")
 
     def get_focus_metrics(self, hours: int = 24) -> Dict:
         """Get focus metrics for the specified time period"""
@@ -841,3 +902,62 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get focus sessions: {e}")
             raise DatabaseError(f"Failed to get focus sessions: {e}") 
+
+    def store_summaries(self, summaries: List[ScreenSummary]) -> None:
+        """Store screen summaries in the database"""
+        try:
+            conn = self.get_connection()
+            try:
+                conn.execute("BEGIN TRANSACTION")
+                
+                for summary in summaries:
+                    # Debug log the summary being stored
+                    logger.debug(f"Storing summary from {summary.timestamp}: {summary.summary[:100]}...")
+                    
+                    cursor = conn.execute("""
+                        INSERT INTO activity_snapshots 
+                        (timestamp, summary) 
+                        VALUES (?, ?)
+                        """, (
+                            summary.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                            summary.summary
+                        )
+                    )
+                    snapshot_id = cursor.lastrowid
+                    
+                    # Debug log each activity
+                    for activity in summary.activities:
+                        logger.debug(f"Storing activity: {activity.name} for snapshot {snapshot_id}")
+                        conn.execute("""
+                            INSERT INTO activities 
+                            (snapshot_id, name, category, purpose, 
+                             attention_level, context_switches, workspace_organization)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                snapshot_id,
+                                activity.name,
+                                activity.category,
+                                activity.purpose,
+                                activity.focus_indicators.attention_level,
+                                activity.focus_indicators.context_switches,
+                                activity.focus_indicators.workspace_organization
+                            )
+                        )
+                
+                conn.commit()
+                logger.info(f"Stored {len(summaries)} summaries in database")
+                
+                # Verify storage
+                cursor = conn.execute("SELECT COUNT(*) FROM activity_snapshots")
+                total_snapshots = cursor.fetchone()[0]
+                logger.info(f"Total snapshots in database: {total_snapshots}")
+                
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                conn.close()
+                
+        except Exception as e:
+            logger.error(f"Failed to store summaries: {e}")
+            raise DatabaseError(f"Failed to store summaries: {e}") 
