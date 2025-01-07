@@ -46,7 +46,7 @@ def sample_summary():
                 name="coding",
                 category="development",
                 focus_indicators=FocusIndicators(
-                    attention_level=0.8,
+                    attention_level=80,
                     context_switches="low",
                     workspace_organization="organized"
                 )

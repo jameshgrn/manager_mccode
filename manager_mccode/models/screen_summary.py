@@ -1,11 +1,20 @@
 from datetime import datetime
 from typing import List, Dict, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class FocusIndicators(BaseModel):
-    attention_level: int
-    context_switches: str
-    workspace_organization: str
+    """Focus and attention indicators"""
+    attention_level: int = Field(
+        ge=0,  # Greater than or equal to 0
+        le=100,  # Less than or equal to 100
+        description="Attention level (0-100)"
+    )
+    context_switches: str = Field(
+        description="Frequency of context switches (low/medium/high)"
+    )
+    workspace_organization: str = Field(
+        description="State of workspace organization (organized/mixed/scattered)"
+    )
     window_state: Optional[str] = None
     tab_count: Optional[str] = None
     content_type: Optional[str] = None
