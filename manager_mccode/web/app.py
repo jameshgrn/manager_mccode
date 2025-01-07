@@ -20,6 +20,15 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 # Initialize services
 settings = Settings()
 db = DatabaseManager(settings.DEFAULT_DB_PATH)
+db.initialize()  # Ensure tables exist
+
+# Add sample data if database is empty
+if not db.get_snapshots_between(
+    datetime.now() - timedelta(days=7),
+    datetime.now()
+):
+    db.add_sample_data()
+
 metrics = MetricsCollector(db)
 
 @app.get("/")

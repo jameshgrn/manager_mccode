@@ -230,47 +230,60 @@ class DatabaseManager:
             raise DatabaseError(f"Integrity check failed: {e}")
 
     def initialize(self):
-        """Initialize the database and run migrations"""
+        """Initialize database tables and indexes"""
         try:
-            logger.info(f"Connecting to database at path: {self.db_path}")
-
-            # Only create directories if not using in-memory database
-            if self.db_path != ":memory:":
-                db_path = Path(self.db_path)
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-                db_path_str = str(db_path)
-            else:
-                db_path_str = self.db_path
-
-            self.conn = sqlite3.connect(db_path_str)
-            # Enable foreign key support
-            self.conn.execute("PRAGMA foreign_keys = ON")
-            # Enable WAL mode for better concurrency
-            self.conn.execute("PRAGMA journal_mode = WAL")
-            # Set synchronous mode for better performance while maintaining safety
-            self.conn.execute("PRAGMA synchronous = NORMAL")
-            # Enable memory-mapped I/O for better performance
-            self.conn.execute("PRAGMA mmap_size = 30000000000")
-
-            logger.info("Successfully connected to SQLite.")
-
-            # Run migrations in a transaction
-            self.conn.execute("BEGIN TRANSACTION")
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Create activity_snapshots table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS activity_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME NOT NULL,
+                    summary TEXT,
+                    primary_task TEXT,
+                    focus_score REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Create activities table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS activities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id INTEGER,
+                    name TEXT NOT NULL,
+                    category TEXT,
+                    attention_level REAL,
+                    context_switches TEXT,
+                    workspace_organization TEXT,
+                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Create indexes
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
+                ON activity_snapshots(timestamp)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_activities_snapshot 
+                ON activities(snapshot_id)
+            """)
+            
+            # Add any missing columns (for backward compatibility)
             try:
-                self._run_migrations()
-                self.conn.commit()
-                logger.info("Migrations complete")
+                cursor.execute("ALTER TABLE activity_snapshots ADD COLUMN focus_score REAL")
+            except:
+                pass  # Column already exists
                 
-                # Run optimizations after the transaction is committed
-                self._optimize_database()
-                logger.info("Database initialization complete")
-            except Exception as e:
-                self.conn.rollback()
-                raise e
-
+            conn.commit()
+            logger.info("Database initialization complete")
+            
         except Exception as e:
-            logger.error(f"Database initialization failed: {e}", exc_info=True)
-            raise DatabaseError(f"Initialization failed: {e}")
+            logger.error(f"Failed to initialize database: {e}")
+            raise DatabaseError(f"Database initialization failed: {e}")
 
     def _run_migrations(self):
         """Run any pending database migrations"""
@@ -611,9 +624,9 @@ class DatabaseManager:
                     s.id,
                     s.timestamp,
                     s.summary,
-                    s.primary_task,
                     s.focus_score,
-                    GROUP_CONCAT(a.name) as activities
+                    GROUP_CONCAT(a.name) as activities,
+                    GROUP_CONCAT(a.category) as categories
                 FROM activity_snapshots s
                 LEFT JOIN activities a ON s.id = a.snapshot_id
                 WHERE s.timestamp BETWEEN ? AND ?
@@ -626,12 +639,20 @@ class DatabaseManager:
             
             for row in cursor.fetchall():
                 snapshot = dict(zip(columns, row))
-                # Convert activities string to list
-                if snapshot['activities']:
+                # Convert activities and categories strings to lists
+                if snapshot.get('activities'):
                     snapshot['activities'] = snapshot['activities'].split(',')
                 else:
                     snapshot['activities'] = []
-                return snapshots
+                    
+                if snapshot.get('categories'):
+                    snapshot['categories'] = snapshot['categories'].split(',')
+                else:
+                    snapshot['categories'] = []
+                    
+                snapshots.append(snapshot)
+                
+            return snapshots
                 
         except Exception as e:
             logger.error(f"Error getting snapshots: {e}")
@@ -690,3 +711,48 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting focus states: {e}")
             raise DatabaseError(f"Failed to get focus states: {e}") 
+
+    def add_sample_data(self):
+        """Add sample data for testing"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Add sample snapshots
+            now = datetime.now()
+            for hour in range(9, 18):  # 9 AM to 6 PM
+                timestamp = now.replace(hour=hour, minute=0, second=0)
+                
+                # Insert snapshot
+                cursor.execute("""
+                    INSERT INTO activity_snapshots 
+                    (timestamp, summary, focus_score)
+                    VALUES (?, ?, ?)
+                """, (
+                    timestamp,
+                    f"Working on project at {hour}:00",
+                    80 if 10 <= hour <= 15 else 60
+                ))
+                
+                snapshot_id = cursor.lastrowid
+                
+                # Insert activities
+                activities = [
+                    ("vscode", "development", 85, "low", "organized"),
+                    ("chrome", "research", 70, "medium", "neutral"),
+                    ("slack", "communication", 50, "high", "scattered")
+                ]
+                
+                for activity in activities:
+                    cursor.execute("""
+                        INSERT INTO activities 
+                        (snapshot_id, name, category, attention_level, context_switches, workspace_organization)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (snapshot_id, *activity))
+            
+            conn.commit()
+            logger.info("Sample data added successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to add sample data: {e}")
+            raise DatabaseError(f"Failed to add sample data: {e}") 
