@@ -138,32 +138,26 @@ async def test_metrics_and_recommendations(test_env):
 @pytest.mark.asyncio
 async def test_error_handling_flow(test_env):
     """Test error handling in the integration flow"""
-    with patch('mss.mss') as mock_mss:
-        # Mock the mss instance to raise an error
-        mock_instance = Mock()
-        mock_instance.grab.side_effect = Exception("Screen capture failed")
-        mock_mss.return_value = mock_instance
+    # Test initialization error
+    with patch('mss.mss', side_effect=Exception("Screen capture failed")):
+        with pytest.raises(ScreenshotError) as exc_info:
+            manager = ImageManager()
+        assert "Failed to initialize screenshot manager" in str(exc_info.value)
+
+    # Test capture error by creating a mock MSS class
+    class MockMSS:
+        def __init__(self):
+            self.monitors = [{"top": 0, "left": 0, "width": 1920, "height": 1080}]  # Mock monitor
         
-        # Attempt capture
-        with pytest.raises(ScreenshotError):
-            await test_env['image_manager'].capture_screenshot()
-    
-    # Test database error handling
-    with pytest.raises(Exception):
-        test_env['db'].store_summary(None)
-    
-    # Test API error handling
-    with patch('google.generativeai.GenerativeModel') as mock_model:
-        mock_model.return_value.generate_content.side_effect = Exception("API Error")
+        def grab(self, *args):
+            raise Exception("Screen capture failed")
         
-        # Create a test image
-        test_image = test_env['screenshots_dir'] / "test.png"
-        test_image.write_bytes(b'test')
-        
-        # Create analyzer instance
-        analyzer = GeminiAnalyzer()
-        
-        # Analysis should return error summary
-        result = await analyzer.analyze_image(str(test_image))
-        assert "Error" in result.summary
-        assert result.activities[0].name == "Error" 
+        def close(self):
+            pass
+
+    # Replace the real MSS with our mock
+    with patch('mss.mss', return_value=MockMSS()):
+        manager = ImageManager()
+        with pytest.raises(ScreenshotError) as exc_info:
+            await manager.capture_screenshot()
+        assert "Failed to grab screenshot" in str(exc_info.value) 

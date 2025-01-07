@@ -2,10 +2,13 @@ import os
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional
 import mss
 from PIL import Image
-from manager_mccode.config.config import config
+import io
+
+from manager_mccode.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,94 +25,114 @@ class CompressionError(ImageError):
     pass
 
 class ImageManager:
-    def __init__(self, temp_dir: Path = None):
-        """Initialize the image manager"""
+    """Manages screenshot capture and optimization"""
+    
+    def __init__(self, temp_dir: Optional[Path] = None):
+        """Initialize the image manager
+        
+        Args:
+            temp_dir: Optional directory for temporary files. Defaults to settings.TEMP_DIR
+        """
+        self.temp_dir = temp_dir or settings.TEMP_DIR
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        
         try:
-            self.temp_dir = temp_dir or config.temp_screenshots_dir
-            self.temp_dir.mkdir(parents=True, exist_ok=True)
-            self.sct = mss.mss()  # Screenshot utility
-            logger.info(f"Initialized ImageManager with temp_dir: {self.temp_dir}")
+            self.sct = mss.mss()
         except Exception as e:
             raise ScreenshotError(f"Failed to initialize screenshot manager: {e}")
-
-    async def capture_screenshot(self) -> str:
-        """Capture and save a screenshot of all monitors"""
+        
+        # Compression settings
+        self.JPEG_QUALITY = 85  # Good balance between quality and size
+        self.MAX_DIMENSION = 1920  # Max width/height for screenshots
+        self.COMPRESSION_FORMAT = "JPEG"  # JPEG is better for screenshots than PNG
+        
+    async def capture_screenshot(self) -> Path:
+        """Capture and optimize a screenshot
+        
+        Returns:
+            Path: Path to the optimized screenshot
+            
+        Raises:
+            ScreenshotError: If screenshot capture fails
+        """
         try:
-            # Create screenshot directory if it doesn't exist
-            self.temp_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate unique filename
-            filepath = self.temp_dir / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            
+            # Capture screenshot directly as bytes
             try:
-                # Take screenshot of all monitors
-                screenshots = []
-                with mss.mss() as sct:  # This might raise an exception
-                    for monitor in sct.monitors[1:]:  # Skip first monitor (combined view)
-                        screenshot = sct.grab(monitor)
-                        screenshots.append(Image.frombytes('RGB', screenshot.size, screenshot.rgb))
-                        
-                # Combine screenshots if multiple monitors
-                if len(screenshots) > 1:
-                    # Calculate total width and max height
-                    total_width = sum(img.width for img in screenshots)
-                    max_height = max(img.height for img in screenshots)
-                    
-                    # Create new image with combined dimensions
-                    final_image = Image.new('RGB', (total_width, max_height))
-                    
-                    # Paste screenshots side by side
-                    x_offset = 0
-                    for img in screenshots:
-                        final_image.paste(img, (x_offset, 0))
-                        x_offset += img.width
-                        
-                    logger.info(f"Combined {len(screenshots)} monitor screenshots")
-                else:
-                    final_image = screenshots[0]
-                    logger.info(f"Using single monitor screenshot")
-                
-                # Save with compression
-                final_image.save(filepath, format="PNG", optimize=True)
-                return str(filepath)
-                
+                screenshot = self.sct.grab(self.sct.monitors[1])  # Primary monitor
             except Exception as e:
-                raise ScreenshotError(f"Failed to capture screenshot: {e}")
-                
-        except Exception as e:
-            logger.error(f"Screenshot capture failed: {e}")
-            raise ScreenshotError(f"Screenshot capture failed: {e}")
-
-    async def cleanup(self):
-        """Clean up old screenshots"""
-        try:
-            current_time = datetime.now()
-            retention_minutes = config.image.retention_minutes
-            batch_size = config.image.cleanup_batch_size
+                raise ScreenshotError(f"Failed to grab screenshot: {e}")
             
-            # Get list of files older than retention period
-            old_files = [
-                f for f in self.temp_dir.glob("*.png")
-                if (current_time - datetime.fromtimestamp(f.stat().st_mtime)).total_seconds() 
-                > retention_minutes * 60
-            ]
-
-            # Process in batches
-            for i in range(0, len(old_files), batch_size):
-                batch = old_files[i:i + batch_size]
-                for file in batch:
-                    try:
-                        file.unlink()
-                    except Exception as e:
-                        logger.error(f"Failed to delete {file}: {e}")
-                await asyncio.sleep(0.1)  # Small delay between batches
-
-            logger.info(f"Cleaned up {len(old_files)} old screenshots")
-
+            # Convert to PIL Image
+            try:
+                img = Image.frombytes('RGB', screenshot.size, screenshot.bgra, 'raw', 'BGRX')
+            except Exception as e:
+                raise ScreenshotError(f"Failed to convert screenshot: {e}")
+            
+            # Process in thread pool to avoid blocking
+            return await asyncio.to_thread(self._process_image, img)
+            
+        except ScreenshotError:
+            raise
         except Exception as e:
-            logger.error(f"Error during screenshot cleanup: {e}")
-
-    def __del__(self):
-        """Cleanup mss resources"""
-        if hasattr(self, 'sct'):
-            self.sct.close() 
+            raise ScreenshotError(f"Failed to capture screenshot: {e}")
+    
+    def _process_image(self, img: Image.Image) -> Path:
+        """Process and optimize screenshot
+        
+        Args:
+            img: PIL Image to process
+            
+        Returns:
+            Path: Path to processed image
+        """
+        try:
+            # Convert to RGB (remove alpha channel)
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            
+            # Resize if needed
+            if max(img.size) > self.MAX_DIMENSION:
+                ratio = self.MAX_DIMENSION / max(img.size)
+                new_size = tuple(int(dim * ratio) for dim in img.size)
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Save optimized image
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = self.temp_dir / f"screenshot_{timestamp}.jpg"
+            
+            img.save(
+                output_path,
+                format=self.COMPRESSION_FORMAT,
+                quality=self.JPEG_QUALITY,
+                optimize=True
+            )
+            
+            return output_path
+            
+        except Exception as e:
+            raise CompressionError(f"Failed to process screenshot: {e}")
+    
+    async def cleanup_old_images(self, max_age_minutes: Optional[int] = None) -> None:
+        """Clean up old screenshot files
+        
+        Args:
+            max_age_minutes: Optional override for maximum age of files to keep
+        """
+        max_age = max_age_minutes or settings.SCREENSHOT_RETENTION_DAYS * 24 * 60
+        cutoff_time = datetime.now() - timedelta(minutes=max_age)
+        
+        try:
+            for file in self.temp_dir.glob("screenshot_*.jpg"):
+                if file.stat().st_mtime < cutoff_time.timestamp():
+                    file.unlink()
+        except Exception as e:
+            logger.error(f"Error cleaning up old images: {e}")
+    
+    async def cleanup(self) -> None:
+        """Cleanup resources"""
+        try:
+            self.sct.close()
+        except Exception as e:
+            logger.error(f"Error closing screenshot manager: {e}") 

@@ -11,7 +11,10 @@ async def test_screenshot_capture(tmp_path):
     screenshot_path = await manager.capture_screenshot()
     
     assert Path(screenshot_path).exists()
-    assert Path(screenshot_path).suffix == '.png'
+    assert Path(screenshot_path).suffix == '.jpg'
+    
+    # Cleanup
+    await manager.cleanup()
 
 @pytest.mark.asyncio
 async def test_screenshot_error(mocker):
@@ -27,14 +30,12 @@ async def test_screenshot_error(mocker):
 @pytest.mark.asyncio
 async def test_compression_error(tmp_path):
     """Test handling of image compression errors"""
-    image_manager = ImageManager(tmp_path)
+    image_manager = ImageManager(temp_dir=tmp_path)
     
-    with patch('PIL.Image.new') as mock_new:
-        # Mock PIL.Image.new to raise an error
-        mock_new.side_effect = Exception("Compression failed")
-        
+    # Mock the Image.frombytes method instead of Image.new
+    with patch('PIL.Image.frombytes', side_effect=Exception("Compression failed")):
         # Attempt screenshot
         with pytest.raises(ScreenshotError) as exc_info:
             await image_manager.capture_screenshot()
         
-        assert "Failed to capture screenshot" in str(exc_info.value) 
+        assert "Failed to convert screenshot" in str(exc_info.value) 
