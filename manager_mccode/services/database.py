@@ -328,7 +328,7 @@ class DatabaseManager:
                 FROM activity_snapshots a
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
                 LEFT JOIN environments e ON a.id = e.snapshot_id
-                WHERE a.timestamp > ?
+                WHERE datetime(a.timestamp) > datetime(?)
                 ORDER BY a.timestamp DESC
             """, [cutoff])
             

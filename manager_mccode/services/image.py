@@ -127,14 +127,19 @@ class ImageManager:
         
         try:
             count = 0
-            for filepath in self.temp_dir.glob("screenshot_*.jpg"):  # Match test file pattern
+            # Get all jpg files that match our pattern
+            for filepath in self.temp_dir.glob("screenshot_*.jpg"):
                 try:
                     # Use creation time for comparison
                     creation_time = datetime.fromtimestamp(filepath.stat().st_ctime)
+                    logger.debug(f"Checking file {filepath}, created at {creation_time}, cutoff is {cutoff}")
+                    
                     if creation_time < cutoff:
                         try:
+                            logger.debug(f"Attempting to delete {filepath}")
                             filepath.unlink()
                             count += 1
+                            logger.debug(f"Successfully deleted {filepath}")
                         except Exception as e:
                             logger.error(f"Failed to delete {filepath}: {e}")
                             continue
