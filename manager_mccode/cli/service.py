@@ -87,12 +87,20 @@ def install():
         click.echo("Service installed and started!")
 
 @cli.command()
-def start():
+@click.option('--debug', is_flag=True, help='Enable debug output')
+def start(debug):
     """Start Manager McCode as a background service"""
     try:
         from manager_mccode.services.runner import run_service
-        console.print("[yellow]Starting Manager McCode service...[/yellow]")
-        run_service()
+        if not debug:
+            # Only show minimal output
+            console.print("[yellow]Starting Manager McCode...[/yellow]")
+            run_service()
+        else:
+            # Show full debug output
+            console.print("[yellow]Starting Manager McCode in debug mode...[/yellow]")
+            logging.getLogger().setLevel(logging.DEBUG)
+            run_service()
     except Exception as e:
         logger.error(f"Failed to start service: {e}")
         console.print(f"[red]Failed to start service: {e}[/red]")

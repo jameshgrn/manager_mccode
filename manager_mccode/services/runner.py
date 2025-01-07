@@ -28,16 +28,24 @@ class ServiceRunner:
         """Configure logging for background service"""
         config.log_file.parent.mkdir(parents=True, exist_ok=True)
         
-        handlers = [
-            logging.FileHandler(config.log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
+        # File handler with full logging
+        file_handler = logging.FileHandler(config.log_file)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
         
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=handlers
-        )
+        # Console handler with minimal logging
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.WARNING)  # Only show warnings and errors
+        console_handler.setFormatter(logging.Formatter('%(message)s'))
+        
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO)
+        root_logger.handlers = []  # Remove existing handlers
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
     
     def _write_pid(self):
         """Write PID file"""
