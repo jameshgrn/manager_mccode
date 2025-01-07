@@ -5,18 +5,21 @@ import logging
 from typing import List, Dict, Optional, Tuple, Any
 import sys
 import json
-from manager_mccode.models.screen_summary import ScreenSummary
+from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators
 from manager_mccode.config.settings import settings
+from manager_mccode.services.analyzer import GeminiAnalyzer
+from manager_mccode.models.focus_session import FocusSession, FocusTrigger
 
 logger = logging.getLogger(__name__)
 
 MIGRATIONS = [
     """
-    -- initial_schema
-    DROP TABLE IF EXISTS activity_snapshots;
+    -- Drop existing tables
+    DROP TABLE IF EXISTS focus_triggers;
+    DROP TABLE IF EXISTS focus_sessions;
     DROP TABLE IF EXISTS focus_states;
-    DROP TABLE IF EXISTS task_segments;
     DROP TABLE IF EXISTS activities;
+    DROP TABLE IF EXISTS activity_snapshots;
     DROP TABLE IF EXISTS environments;
 
     -- Core activity tracking
@@ -30,48 +33,66 @@ MIGRATIONS = [
         batch_id INTEGER
     );
 
+    -- Activity details for each snapshot
+    CREATE TABLE activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        purpose TEXT,
+        attention_level FLOAT NOT NULL,
+        context_switches TEXT NOT NULL,
+        workspace_organization TEXT NOT NULL,
+        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+    );
+
     -- Focus state tracking
     CREATE TABLE focus_states (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
-        state_type VARCHAR(50) NOT NULL,  -- focused, transitioning, scattered
+        state_type VARCHAR(50) NOT NULL,
         confidence FLOAT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+    );
+
+    -- Focus session tracking
+    CREATE TABLE focus_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_time TIMESTAMP NOT NULL,
+        end_time TIMESTAMP,
+        duration_minutes INTEGER,
+        activity_type TEXT NOT NULL,
+        interruption_count INTEGER DEFAULT 0,
+        context_switches INTEGER DEFAULT 0,
+        attention_score FLOAT
+    );
+
+    -- Focus trigger tracking
+    CREATE TABLE focus_triggers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        trigger_time TIMESTAMP NOT NULL,
+        trigger_type TEXT NOT NULL,
+        trigger_source TEXT NOT NULL,
+        recovery_time_seconds INTEGER,
+        FOREIGN KEY (session_id) REFERENCES focus_sessions(id)
     );
 
     -- Environment details for each snapshot
     CREATE TABLE environments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
-        environment TEXT NOT NULL,  -- Changed to store environment as text
+        environment TEXT NOT NULL,
         FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
-    -- Activity details for each snapshot
-    CREATE TABLE activities (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        snapshot_id INTEGER NOT NULL,
-        activity_type TEXT NOT NULL,
-        category TEXT NOT NULL,
-        attention_level FLOAT NOT NULL,
-        context_switches TEXT NOT NULL,  -- low, medium, high
-        workspace_organization TEXT NOT NULL,  -- organized, mixed, scattered
-        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
-    );
-
-    -- Indexes for performance
-    CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
-        ON activity_snapshots(timestamp);
-    
-    CREATE INDEX IF NOT EXISTS idx_activities_snapshot 
-        ON activities(snapshot_id);
-    
-    CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot 
-        ON focus_states(snapshot_id);
-    
-    CREATE INDEX IF NOT EXISTS idx_environments_snapshot 
-        ON environments(snapshot_id);
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_focus_sessions_time ON focus_sessions(start_time);
+    CREATE INDEX IF NOT EXISTS idx_environments_snapshot ON environments(snapshot_id);
     """
 ]
 
@@ -86,10 +107,11 @@ class DatabaseManager:
         Args:
             db_path: Path to database file, or ":memory:" for in-memory database
         """
-        self.db_path = db_path or "manager_mccode.db"  # Changed from settings.DEFAULT_DB_PATH
+        self.db_path = db_path or "manager_mccode.db"
         logger.info(f"Initialized DatabaseManager with db_path: {self.db_path}")
-        self.conn = self.get_connection()  # Initialize connection first
-        self.initialize()  # Then initialize schema
+        self.conn = self.get_connection()
+        self.initialize()  # Ensure tables are created
+        self.conn.commit()  # Commit any initialization changes
 
     def get_connection(self):
         """Get a database connection, creating it if needed"""
@@ -106,11 +128,10 @@ class DatabaseManager:
             # Enable foreign key support
             conn.execute("PRAGMA foreign_keys = ON")
             # Enable WAL mode for better concurrency
-            conn.execute("PRAGMA journal_mode = WAL")
+            if self.db_path != ":memory:":
+                conn.execute("PRAGMA journal_mode = WAL")
             # Set synchronous mode for better performance while maintaining safety
             conn.execute("PRAGMA synchronous = NORMAL")
-            # Enable memory-mapped I/O for better performance
-            conn.execute("PRAGMA mmap_size = 30000000000")
 
             return conn
 
@@ -182,7 +203,7 @@ class DatabaseManager:
             
             # Get table statistics
             cursor.execute("""
-                SELECT 
+                SELECT
                     name,
                     (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
                     (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
@@ -202,32 +223,36 @@ class DatabaseManager:
                     "trigger_count": trigger_count
                 }
             
-            # Get time range info
+            # Get time range info from activity_snapshots
             cursor.execute("""
-                SELECT 
+                SELECT
                     MIN(timestamp) as oldest,
                     MAX(timestamp) as newest,
                     COUNT(*) as total
-                FROM screen_summaries
+                FROM activity_snapshots
             """)
-            time_range = dict(zip(['oldest', 'newest', 'total_records'], cursor.fetchone()))
             
-            # Get database size
-            cursor.execute("PRAGMA page_size")
-            page_size = cursor.fetchone()[0]
-            cursor.execute("PRAGMA page_count")
-            page_count = cursor.fetchone()[0]
-            db_size_mb = (page_size * page_count) / (1024 * 1024)
+            time_range = cursor.fetchone()
+            
+            # Handle in-memory database size
+            if self.db_path == ":memory:":
+                db_size = 0
+            else:
+                db_size = Path(self.db_path).stat().st_size / (1024 * 1024)
             
             return {
                 "tables": tables,
-                "time_range": time_range,
-                "database_size_mb": db_size_mb
+                "database_size_mb": db_size,
+                "time_range": {
+                    "oldest": time_range[0] if time_range[0] else None,
+                    "newest": time_range[1] if time_range[1] else None,
+                    "total_records": time_range[2]
+                }
             }
             
         except Exception as e:
             logger.error(f"Failed to get database stats: {e}")
-            raise
+            raise DatabaseError(f"Failed to get database stats: {e}")
 
     def verify_database_integrity(self) -> bool:
         """Run integrity check on the database
@@ -262,56 +287,15 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             
-            # Create activity snapshots table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS activity_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP NOT NULL,
-                    summary TEXT NOT NULL,
-                    window_title TEXT,
-                    active_app TEXT,
-                    focus_score FLOAT,
-                    batch_id INTEGER
-                )
-            """)
-            
-            # Create focus states table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS focus_states (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id INTEGER NOT NULL,
-                    state_type VARCHAR(50) NOT NULL,  -- focused, transitioning, scattered
-                    confidence FLOAT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Create activities table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS activities (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    purpose TEXT,
-                    attention_level FLOAT NOT NULL,
-                    context_switches TEXT NOT NULL,  -- low, medium, high
-                    workspace_organization TEXT NOT NULL,  -- organized, mixed, scattered
-                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Create indexes for performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id)")
+            # Execute the migrations in order
+            cursor.executescript(MIGRATIONS[0])
             
             self.conn.commit()
             logger.info("Database initialization complete")
             
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
+            self.conn.rollback()  # Rollback on error
             raise DatabaseError(f"Database initialization failed: {e}")
 
     def _run_migrations(self):
@@ -384,20 +368,19 @@ class DatabaseManager:
     def get_recent_activity(self, hours: int = 1) -> List[Dict]:
         """Get recent activity with focus states"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            cursor = self.conn.cursor()  # Use existing connection instead of creating new one
             
             # Debug logging
             logger.debug(f"Getting activity for past {hours} hours")
             
             # Simplified query that doesn't rely on relative time
             cursor.execute("""
-                SELECT 
+                SELECT
                     a.timestamp,
                     a.summary,
                     f.state_type as focus_state,
                     f.confidence as focus_confidence,
-                    act.activity_type,
+                    act.name as activity_name,
                     act.category,
                     act.attention_level
                 FROM activity_snapshots a
@@ -414,7 +397,7 @@ class DatabaseManager:
                     'summary': row[1],
                     'focus_state': row[2],
                     'focus_confidence': row[3],
-                    'activity_type': row[4],
+                    'activity_name': row[4],
                     'category': row[5],
                     'attention_level': row[6]
                 }
@@ -440,63 +423,62 @@ class DatabaseManager:
 
     def store_summary(self, summary: ScreenSummary) -> int:
         """Store a screen summary in the database"""
-        if not summary or not summary.timestamp:
-            raise DatabaseError("Invalid summary: missing required fields")
-
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            cursor = self.conn.cursor()
             
-            # Debug logging
-            logger.debug(f"Storing summary with timestamp {summary.timestamp}")
-            logger.debug(f"Context: {summary.context}")
+            # Start transaction
+            cursor.execute("BEGIN TRANSACTION")
             
-            # Insert main snapshot
-            cursor.execute("""
-                INSERT INTO activity_snapshots 
-                (timestamp, summary, focus_score)
-                VALUES (?, ?, ?)
-                RETURNING id
-            """, (
-                summary.timestamp,
-                summary.summary,
-                summary.context.confidence if summary.context else 0.0
-            ))
-            
-            snapshot_id = cursor.fetchone()[0]
-            logger.debug(f"Created snapshot with ID: {snapshot_id}")
-            
-            # Store focus state
-            if summary.context and summary.context.attention_state:
-                logger.debug(f"Storing focus state: {summary.context.attention_state}")
+            try:
+                # Insert main snapshot
                 cursor.execute("""
-                    INSERT INTO focus_states 
-                    (snapshot_id, state_type, confidence)
+                    INSERT INTO activity_snapshots 
+                    (timestamp, summary, focus_score)
                     VALUES (?, ?, ?)
+                    RETURNING id
                 """, (
-                    snapshot_id,
-                    summary.context.attention_state,
-                    summary.context.confidence
+                    summary.timestamp,
+                    summary.summary,
+                    0.0  # Default focus score
                 ))
-            
-            # Store activities
-            for activity in summary.activities:
-                cursor.execute("""
-                    INSERT INTO activities 
-                    (snapshot_id, activity_type, category, attention_level,
-                     context_switches, workspace_organization)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    snapshot_id,
-                    activity.name,
-                    activity.category,
-                    activity.focus_indicators.attention_level,
-                    activity.focus_indicators.context_switches,
-                    activity.focus_indicators.workspace_organization
-                ))
-            
-            conn.commit()
-            return snapshot_id
+                
+                snapshot_id = cursor.fetchone()[0]
+                
+                # Store activities
+                for activity in summary.activities:
+                    cursor.execute("""
+                        INSERT INTO activities 
+                        (snapshot_id, name, category, purpose, attention_level,
+                         context_switches, workspace_organization)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        snapshot_id,
+                        activity.name,
+                        activity.category,
+                        getattr(activity, 'purpose', ''),
+                        activity.focus_indicators.attention_level,
+                        activity.focus_indicators.context_switches,
+                        activity.focus_indicators.workspace_organization
+                    ))
+                
+                # Store focus state if context exists and has required attributes
+                if hasattr(summary, 'context') and summary.context:
+                    cursor.execute("""
+                        INSERT INTO focus_states 
+                        (snapshot_id, state_type, confidence)
+                        VALUES (?, ?, ?)
+                    """, (
+                        snapshot_id,
+                        summary.context.attention_state,
+                        summary.context.confidence
+                    ))
+                
+                cursor.execute("COMMIT")
+                return snapshot_id
+                
+            except Exception as e:
+                cursor.execute("ROLLBACK")
+                raise e
                 
         except Exception as e:
             logger.error(f"Failed to store summary: {e}")
@@ -577,27 +559,32 @@ class DatabaseManager:
             logger.error(f"Schema verification failed: {e}") 
 
     def get_recent_summaries(self, limit: int = 10) -> List[Dict]:
-        """Get the most recent summaries with their associated focus states"""
+        """Get recent summaries from the database"""
         try:
             cursor = self.conn.execute("""
                 SELECT 
-                    a.id as id,
-                    datetime(a.timestamp) as timestamp,
-                    a.summary as summary,
-                    a.focus_score as focus_score,
+                    s.id,
+                    datetime(s.timestamp) as timestamp,
+                    s.summary,
+                    s.focus_score,
                     f.state_type as focus_state,
-                    f.confidence as focus_confidence,
-                    e.environment as environment
-                FROM activity_snapshots a
-                LEFT JOIN focus_states f ON a.id = f.snapshot_id
-                LEFT JOIN environments e ON a.id = e.snapshot_id
-                ORDER BY a.timestamp DESC
+                    f.confidence as focus_confidence
+                FROM activity_snapshots s
+                LEFT JOIN focus_states f ON s.id = f.snapshot_id
+                ORDER BY s.timestamp DESC
                 LIMIT ?
             """, [limit])
             
-            # Convert rows to dictionaries using column names
-            columns = [description[0] for description in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            return [{
+                'id': row[0],
+                'timestamp': datetime.fromisoformat(row[1]),  # Convert to datetime
+                'summary': row[2],
+                'focus_score': row[3],
+                'focus_state': row[4],
+                'focus_confidence': row[5]
+            } for row in rows]
+            
         except Exception as e:
             logger.error(f"Error getting recent summaries: {e}")
             raise DatabaseError(f"Failed to get recent summaries: {e}") 
@@ -605,39 +592,54 @@ class DatabaseManager:
     def get_focus_metrics(self, hours: int = 24) -> Dict:
         """Get focus metrics for the specified time period"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            cursor = self.conn.cursor()
             
-            # Get average focus score and context switch counts
+            # Get activities for analysis
             cursor.execute("""
-                SELECT 
-                    AVG(CASE 
-                        WHEN a.attention_level IS NOT NULL THEN a.attention_level 
-                        ELSE 0 
-                    END) as focus_score,
-                    COUNT(CASE 
-                        WHEN a.context_switches = 'high' THEN 1 
-                        ELSE NULL 
-                    END) as high_switches,
-                    COUNT(CASE 
-                        WHEN a.context_switches = 'low' THEN 1 
-                        ELSE NULL 
-                    END) as low_switches
+                SELECT
+                    a.name,
+                    a.category,
+                    a.attention_level,
+                    a.context_switches,
+                    a.workspace_organization,
+                    s.timestamp
                 FROM activity_snapshots s
-                LEFT JOIN activities a ON s.id = a.snapshot_id
+                JOIN activities a ON s.id = a.snapshot_id
                 WHERE s.timestamp >= datetime('now', ?)
+                ORDER BY s.timestamp DESC
             """, (f'-{hours} hours',))
             
-            row = cursor.fetchone()
+            activities = [
+                Activity(
+                    name=row[0],
+                    category=row[1],
+                    purpose="",  # Not used for metrics
+                    focus_indicators=FocusIndicators(
+                        attention_level=row[2],
+                        context_switches=row[3],
+                        workspace_organization=row[4]
+                    ),
+                    timestamp=datetime.fromisoformat(row[5].replace(' ', 'T'))  # Add timestamp
+                ) for row in cursor.fetchall()
+            ]
             
-            return {
-                'focus_score': float(row[0]) if row[0] is not None else 0.0,
-                'context_switches': {
-                    'high': row[1],
-                    'low': row[2]
+            if not activities:
+                return {
+                    'switches_per_hour': 0,
+                    'max_focus_duration': 0,
+                    'common_triggers': [],
+                    'avg_recovery_time': 0,
+                    'recovery_activities': [],
+                    'environmental_impacts': [],
+                    'recommendations': ["Not enough data to generate recommendations"]
                 }
-            }
                 
+            # Use analyzer to get metrics
+            analyzer = GeminiAnalyzer()
+            metrics = analyzer.analyze_focus_patterns(activities)
+            
+            return metrics
+            
         except Exception as e:
             logger.error(f"Failed to get focus metrics: {e}")
             raise DatabaseError(f"Failed to get focus metrics: {e}") 
@@ -743,3 +745,94 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting focus states: {e}")
             raise DatabaseError(f"Failed to get focus states: {e}") 
+
+    def store_focus_session(self, session: FocusSession) -> None:
+        """Store a focus session in the database"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO focus_sessions (
+                    start_time,
+                    end_time,
+                    duration_minutes,
+                    activity_type,
+                    interruption_count,
+                    context_switches,
+                    attention_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                session.start_time.strftime('%Y-%m-%d %H:%M:%S'),  # Format datetime
+                session.end_time.strftime('%Y-%m-%d %H:%M:%S') if session.end_time else None,
+                session.duration_minutes,
+                session.activity_type,
+                0,  # interruption_count - will implement later
+                session.context_switches,
+                session.attention_score
+            ))
+            
+            session_id = cursor.lastrowid
+            
+            # Store any triggers
+            for trigger in session.triggers:
+                cursor.execute("""
+                    INSERT INTO focus_triggers (
+                        session_id,
+                        trigger_time,
+                        trigger_type,
+                        trigger_source,
+                        recovery_time_seconds
+                    ) VALUES (?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    trigger.timestamp.strftime('%Y-%m-%d %H:%M:%S'),  # Format datetime
+                    trigger.type,
+                    trigger.source,
+                    trigger.recovery_time
+                ))
+            
+            self.conn.commit()
+            
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Failed to store focus session: {e}")
+            raise DatabaseError(f"Failed to store focus session: {e}") 
+
+    def get_focus_sessions(self, hours: int = 24) -> List[FocusSession]:
+        """Get focus sessions from the last N hours"""
+        try:
+            cursor = self.conn.cursor()
+            
+            # Calculate cutoff time
+            cutoff = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute("""
+                SELECT 
+                    id,
+                    start_time,
+                    end_time,
+                    duration_minutes,
+                    activity_type,
+                    context_switches,
+                    attention_score
+                FROM focus_sessions
+                WHERE start_time >= ?
+                ORDER BY start_time DESC
+            """, (cutoff,))
+            
+            sessions = []
+            for row in cursor.fetchall():
+                session = FocusSession(
+                    start_time=datetime.fromisoformat(row[1].replace(' ', 'T')),
+                    activity_type=row[4],
+                    end_time=datetime.fromisoformat(row[2].replace(' ', 'T')) if row[2] else None,
+                    duration_minutes=row[3],
+                    context_switches=row[5],
+                    attention_score=row[6]
+                )
+                sessions.append(session)
+                
+            return sessions
+            
+        except Exception as e:
+            logger.error(f"Failed to get focus sessions: {e}")
+            raise DatabaseError(f"Failed to get focus sessions: {e}") 

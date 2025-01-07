@@ -143,50 +143,44 @@ def status():
 
 @cli.command()
 def inspect():
-    """Inspect the stored summaries in the database"""
-    console = Console()
-    db = DatabaseManager()
-    
-    # Get last 10 summaries
-    summaries = db.get_recent_summaries(limit=10)
-    
-    if not summaries:
-        console.print("[yellow]No summaries found in the database[/yellow]")
-        return
-    
-    # Create summary table
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Time", style="cyan", width=12)
-    table.add_column("Activities", style="green")
-    table.add_column("Snapshots", justify="right", style="blue")
-    table.add_column("Summary", style="white", width=60)
-    
-    for summary in summaries:
-        time_str = summary['timestamp']
-        activities = summary.get('activities', [])
-        activities_str = ", ".join(act.get('name', 'Unknown') for act in activities)
-        if len(activities_str) > 40:
-            activities_str = activities_str[:37] + "..."
+    """Inspect recent activity summaries"""
+    try:
+        db = DatabaseManager()
+        summaries = db.get_recent_summaries(limit=10)
+        
+        if not summaries:
+            console.print("[yellow]No recent activities recorded[/yellow]")
+            return
+
+        # Show summaries in a table
+        table = Table(title="Recent Activity Summaries")
+        table.add_column("Time", style="cyan")
+        table.add_column("Activities", style="green")
+        table.add_column("Focus States", style="yellow")
+        table.add_column("Summary", style="white")
+
+        for summary in summaries:
+            # Format timestamp
+            timestamp = datetime.fromisoformat(summary['timestamp'])
+            time_str = timestamp.strftime("%H:%M:%S")
             
-        table.add_row(
-            time_str,
-            activities_str,
-            "1",  # Each summary is one snapshot
-            summary['summary'][:57] + "..." if len(summary['summary']) > 60 else summary['summary']
-        )
-    
-    console.print("\n[bold cyan]Recent Database Summaries[/bold cyan]")
-    console.print(table)
-    
-    # Show statistics
-    total_snapshots = sum(s['snapshot_count'] for s in summaries)
-    total_periods = len(summaries)
-    all_activities = set([act for s in summaries for acts in s['all_activities'] for act in acts])
-    
-    console.print("\n[bold yellow]Statistics[/bold yellow]")
-    console.print(f"Total Time Periods: {total_periods} (15-min blocks)")
-    console.print(f"Total Snapshots: {total_snapshots}")
-    console.print(f"Unique Activities: {len(all_activities)}")
+            # Format activities and focus states
+            activities_str = ", ".join(summary['activities']) if summary['activities'] else "None"
+            focus_states_str = ", ".join(summary['focus_states']) if summary['focus_states'] else "None"
+            
+            table.add_row(
+                time_str,
+                activities_str,
+                focus_states_str,
+                summary['summary']
+            )
+
+        console.print(table)
+
+    except Exception as e:
+        logger.error(f"Failed to inspect summaries: {e}")
+        console.print(f"[red]Error inspecting summaries: {e}[/red]")
+        sys.exit(1)
 
 @cli.command()
 def check():
@@ -421,6 +415,68 @@ def web(host: str, port: int, reload: bool):
         port=port,
         reload=reload
     )
+
+@cli.command()
+@click.option('--hours', default=24, help='Hours of history to analyze')
+def focus(hours):
+    """Analyze focus patterns and productivity metrics"""
+    console = Console()
+    
+    try:
+        db = DatabaseManager()
+        metrics = db.get_focus_metrics(hours=hours)
+        
+        # Create focus report
+        time_chart = Table(title="Peak Performance Times")
+        time_chart.add_column("Time Block")
+        time_chart.add_column("Focus Score")
+        time_chart.add_column("Common Activities")
+        
+        # Context Switching Analysis
+        switch_panel = Panel(
+            Text.from_markup(
+                f"[bold]Context Switching Patterns[/bold]\n"
+                f"Average switches per hour: {metrics['context_switches']['switches_per_hour']:.1f}\n"
+                f"Longest focus duration: {metrics['context_switches']['max_focus_duration']} minutes\n"
+                f"Most common triggers: {', '.join(metrics['context_switches']['common_triggers'])}"
+            )
+        )
+        
+        # Task Completion Stats
+        completion_chart = Table(title="Task Completion Analysis")
+        completion_chart.add_column("Task Type")
+        completion_chart.add_column("Completion Rate")
+        completion_chart.add_column("Avg Focus Quality")
+        
+        # Focus Recovery Insights
+        recovery_panel = Panel(
+            Text.from_markup(
+                f"[bold]Focus Recovery Patterns[/bold]\n"
+                f"Average recovery time: {metrics['task_completion']['avg_recovery_time']:.1f} minutes\n"
+                f"Best recovery activities: {', '.join(metrics['focus_quality']['recovery_activities'])}\n"
+                f"Environmental factors: {', '.join(metrics['environment_impact']['environmental_impacts'])}"
+            )
+        )
+        
+        # Recommendations
+        recommendations = Panel(
+            Text.from_markup(
+                "[bold]Focus Enhancement Recommendations[/bold]\n"
+                "• " + "\n• ".join(metrics['recommendations'])
+            ),
+            title="Personalized Recommendations"
+        )
+        
+        # Display all components
+        console.print(time_chart)
+        console.print(switch_panel)
+        console.print(completion_chart)
+        console.print(recovery_panel)
+        console.print(recommendations)
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze focus patterns: {e}")
+        console.print(f"[red]Error analyzing focus patterns: {e}[/red]")
 
 if __name__ == '__main__':
     cli() 

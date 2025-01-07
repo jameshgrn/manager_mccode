@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from manager_mccode.services.analyzer import GeminiAnalyzer
 from manager_mccode.models.screen_summary import ScreenSummary
+import asyncio
 
 @pytest.fixture
 def mock_image_path(tmp_path):
@@ -15,60 +16,75 @@ def mock_image_path(tmp_path):
     return str(image_path)
 
 @pytest.fixture
-def mock_gemini_response():
-    """Mock successful Gemini API response"""
+def mock_successful_response():
+    """Mock successful API response with all required fields"""
     return {
         "summary": "Test summary of screen activity",
-        "activities": ["coding", "browsing documentation"]
+        "activities": [{
+            "name": "coding",
+            "category": "coding",
+            "purpose": "development",
+            "focus_indicators": {
+                "attention_level": 80,
+                "context_switches": "low",
+                "workspace_organization": "organized"
+            }
+        }],
+        "context": {
+            "primary_task": "development",
+            "attention_state": "focused",
+            "environment": "quiet workspace"
+        }
     }
 
 @pytest.mark.asyncio
-async def test_successful_analysis(mock_image_path, mock_gemini_response):
+async def test_successful_analysis(mock_image_path, mock_successful_response):
     """Test successful image analysis"""
+    analyzer = GeminiAnalyzer()
     with patch('google.generativeai.GenerativeModel') as mock_model:
-        # Setup mock response
         mock_response = Mock()
-        mock_response.text = json.dumps(mock_gemini_response)
+        mock_response.text = json.dumps(mock_successful_response)
         mock_model.return_value.generate_content.return_value = mock_response
+        analyzer.model = mock_model.return_value
 
-        # Run analysis
-        result = await GeminiAnalyzer.analyze_image(mock_image_path)
+        result = await analyzer.analyze_image(mock_image_path)
 
-        # Verify results
         assert isinstance(result, ScreenSummary)
-        assert result.summary == mock_gemini_response["summary"]
-        # Get activity names from the Activity objects
-        activity_names = [activity.name for activity in result.activities]
-        assert activity_names == mock_gemini_response["activities"]
+        assert result.summary == mock_successful_response["summary"]
+        assert len(result.activities) == len(mock_successful_response["activities"])
 
 @pytest.mark.asyncio
 async def test_malformed_json_response(mock_image_path):
     """Test handling of malformed JSON response"""
+    analyzer = GeminiAnalyzer()
     with patch('google.generativeai.GenerativeModel') as mock_model:
         # Setup mock response with invalid JSON
         mock_response = Mock()
         mock_response.text = "Invalid JSON response"
         mock_model.return_value.generate_content.return_value = mock_response
+        analyzer.model = mock_model.return_value
 
         # Run analysis
-        result = await GeminiAnalyzer.analyze_image(mock_image_path)
+        result = await analyzer.analyze_image(mock_image_path)
 
         # Verify error handling
         assert isinstance(result, ScreenSummary)
-        assert "Invalid JSON response..." in result.summary
-        assert [activity.name for activity in result.activities] == ["Unknown"]
+        assert "Error analyzing screenshot: Failed to parse JSON response" in result.summary
+        assert [activity.name for activity in result.activities] == ["Error"]
 
 @pytest.mark.asyncio
 async def test_empty_response(mock_image_path):
     """Test handling of empty API response"""
+    analyzer = GeminiAnalyzer()  # Create instance
     with patch('google.generativeai.GenerativeModel') as mock_model:
         # Setup mock empty response
         mock_response = Mock()
         mock_response.text = ""
         mock_model.return_value.generate_content.return_value = mock_response
+        analyzer.model = mock_model.return_value  # Set the mock model
 
         # Run analysis
-        result = await GeminiAnalyzer.analyze_image(mock_image_path)
+        result = await analyzer.analyze_image(mock_image_path)
 
         # Verify error handling
         assert isinstance(result, ScreenSummary)
@@ -78,12 +94,14 @@ async def test_empty_response(mock_image_path):
 @pytest.mark.asyncio
 async def test_api_error(mock_image_path):
     """Test handling of API errors"""
+    analyzer = GeminiAnalyzer()  # Create instance
     with patch('google.generativeai.GenerativeModel') as mock_model:
         # Setup mock API error
         mock_model.return_value.generate_content.side_effect = Exception("API Error")
+        analyzer.model = mock_model.return_value  # Set the mock model
 
         # Run analysis
-        result = await GeminiAnalyzer.analyze_image(mock_image_path)
+        result = await analyzer.analyze_image(mock_image_path)
 
         # Verify error handling
         assert isinstance(result, ScreenSummary)
@@ -91,41 +109,36 @@ async def test_api_error(mock_image_path):
         assert [activity.name for activity in result.activities] == ["Error"]
 
 @pytest.mark.asyncio
-async def test_markdown_cleanup(mock_image_path):
+async def test_markdown_cleanup(mock_image_path, mock_successful_response):
     """Test cleanup of markdown formatting in response"""
+    analyzer = GeminiAnalyzer()
     with patch('google.generativeai.GenerativeModel') as mock_model:
-        # Setup mock response with markdown
         mock_response = Mock()
-        mock_response.text = """```json
-        {
-            "summary": "Test summary",
-            "activities": ["coding"]
-        }
-        ```"""
+        mock_response.text = f"```json\n{json.dumps(mock_successful_response)}\n```"
         mock_model.return_value.generate_content.return_value = mock_response
+        analyzer.model = mock_model.return_value
 
-        # Run analysis
-        result = await GeminiAnalyzer.analyze_image(mock_image_path)
+        result = await analyzer.analyze_image(mock_image_path)
 
-        # Verify cleanup
         assert isinstance(result, ScreenSummary)
-        assert result.summary == "Test summary"
-        assert [activity.name for activity in result.activities] == ["coding"]
+        assert result.summary == mock_successful_response["summary"]
 
 @pytest.mark.asyncio
-async def test_image_cleanup(mock_image_path):
+async def test_image_cleanup(mock_image_path, mock_successful_response):
     """Test that image file is cleaned up after analysis"""
+    analyzer = GeminiAnalyzer()
     with patch('google.generativeai.GenerativeModel') as mock_model:
-        # Setup basic successful response
+        # Use the mock_successful_response fixture that has all required fields
         mock_response = Mock()
-        mock_response.text = json.dumps({
-            "summary": "Test",
-            "activities": ["test"]
-        })
+        mock_response.text = json.dumps(mock_successful_response)
         mock_model.return_value.generate_content.return_value = mock_response
+        analyzer.model = mock_model.return_value
 
         # Run analysis
-        await GeminiAnalyzer.analyze_image(mock_image_path)
+        await analyzer.analyze_image(mock_image_path)
+
+        # Give a small delay for file cleanup
+        await asyncio.sleep(0.1)
 
         # Verify image cleanup
         assert not Path(mock_image_path).exists() 

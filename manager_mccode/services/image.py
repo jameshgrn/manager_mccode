@@ -9,72 +9,76 @@ from manager_mccode.config.config import config
 
 logger = logging.getLogger(__name__)
 
+class ImageError(Exception):
+    """Base exception for image-related errors"""
+    pass
+
+class ScreenshotError(ImageError):
+    """Exception raised when screenshot capture fails"""
+    pass
+
+class CompressionError(ImageError):
+    """Exception raised when image compression fails"""
+    pass
+
 class ImageManager:
     def __init__(self, temp_dir: Path = None):
         """Initialize the image manager"""
-        self.temp_dir = temp_dir or config.temp_screenshots_dir
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
-        self.sct = mss.mss()  # Screenshot utility
-        logger.info(f"Initialized ImageManager with temp_dir: {self.temp_dir}")
+        try:
+            self.temp_dir = temp_dir or config.temp_screenshots_dir
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            self.sct = mss.mss()  # Screenshot utility
+            logger.info(f"Initialized ImageManager with temp_dir: {self.temp_dir}")
+        except Exception as e:
+            raise ScreenshotError(f"Failed to initialize screenshot manager: {e}")
 
-    async def capture_screenshot(self) -> Path:
+    async def capture_screenshot(self) -> str:
         """Capture and save a screenshot of all monitors"""
         try:
-            # Log monitor information
-            logger.info(f"Available monitors: {len(self.sct.monitors)}")
-            for i, m in enumerate(self.sct.monitors):
-                logger.info(f"Monitor {i}: {m}")
-
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            filename = f"screenshot_{timestamp}.png"
-            filepath = self.temp_dir / filename
-
-            # Capture all monitors (including first one this time)
-            screenshots = []
-            for monitor in self.sct.monitors:  # Try capturing all monitors
-                if monitor == self.sct.monitors[0]:  # Skip the "all monitors" monitor
-                    continue
-                screenshot = self.sct.grab(monitor)
-                img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-                screenshots.append(img)
-                logger.info(f"Captured monitor with size: {img.size}")
-
-            # If we have multiple monitors, combine them horizontally
-            if len(screenshots) > 1:
-                # Calculate total width and max height
-                total_width = sum(img.width for img in screenshots)
-                max_height = max(img.height for img in screenshots)
-                logger.info(f"Combining {len(screenshots)} monitors into image of size {total_width}x{max_height}")
-
-                # Create new image with combined size
-                combined = Image.new('RGB', (total_width, max_height))
-
-                # Paste each screenshot side by side
-                x_offset = 0
-                for img in screenshots:
-                    combined.paste(img, (x_offset, 0))
-                    x_offset += img.width
-
-                final_image = combined
-            else:
-                final_image = screenshots[0]  # Just use the single screenshot
-                logger.info(f"Using single monitor screenshot of size {final_image.size}")
-
-            # Save with compression
-            final_image.save(
-                filepath,
-                format="PNG",
-                optimize=True,
-                quality=config.image.compression_quality
-            )
-
-            logger.info(f"Saved screenshot of {len(screenshots)} monitor(s) to {filepath}")
-            return filepath
-
+            # Create screenshot directory if it doesn't exist
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate unique filename
+            filepath = self.temp_dir / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            
+            try:
+                # Take screenshot of all monitors
+                screenshots = []
+                with mss.mss() as sct:  # This might raise an exception
+                    for monitor in sct.monitors[1:]:  # Skip first monitor (combined view)
+                        screenshot = sct.grab(monitor)
+                        screenshots.append(Image.frombytes('RGB', screenshot.size, screenshot.rgb))
+                        
+                # Combine screenshots if multiple monitors
+                if len(screenshots) > 1:
+                    # Calculate total width and max height
+                    total_width = sum(img.width for img in screenshots)
+                    max_height = max(img.height for img in screenshots)
+                    
+                    # Create new image with combined dimensions
+                    final_image = Image.new('RGB', (total_width, max_height))
+                    
+                    # Paste screenshots side by side
+                    x_offset = 0
+                    for img in screenshots:
+                        final_image.paste(img, (x_offset, 0))
+                        x_offset += img.width
+                        
+                    logger.info(f"Combined {len(screenshots)} monitor screenshots")
+                else:
+                    final_image = screenshots[0]
+                    logger.info(f"Using single monitor screenshot")
+                
+                # Save with compression
+                final_image.save(filepath, format="PNG", optimize=True)
+                return str(filepath)
+                
+            except Exception as e:
+                raise ScreenshotError(f"Failed to capture screenshot: {e}")
+                
         except Exception as e:
-            logger.error(f"Failed to capture screenshot: {e}", exc_info=True)
-            return None
+            logger.error(f"Screenshot capture failed: {e}")
+            raise ScreenshotError(f"Screenshot capture failed: {e}")
 
     async def cleanup(self):
         """Clean up old screenshots"""

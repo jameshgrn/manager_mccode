@@ -73,6 +73,11 @@ class ServiceRunner:
             
             logger.info("Starting Manager McCode service...")
             
+            # Wait for initial batch processing to complete
+            if self.batch_processor.pending_screenshots:
+                logger.info("Processing existing screenshots before starting capture...")
+                await self.batch_processor.process_batch()
+            
             error_count = 0
             last_error_time = None
             

@@ -26,6 +26,10 @@ class BatchProcessor:
         self.pending_screenshots = {}
         self.last_batch_time = datetime.now()
         self.model = self._initialize_model()
+        
+        # Check for existing screenshots on startup
+        self._process_existing_screenshots()
+        
         logger.info(
             f"Initialized BatchProcessor with size={self.batch_size}, "
             f"interval={self.batch_interval}s"
@@ -261,3 +265,32 @@ class BatchProcessor:
                 Path(path).unlink(missing_ok=True)
             except Exception as e:
                 logger.error(f"Failed to clean up screenshot {path}: {e}") 
+
+    def _process_existing_screenshots(self):
+        """Process any screenshots that exist in the temp directory"""
+        try:
+            temp_dir = Path("temp_screenshots")
+            if not temp_dir.exists():
+                return
+                
+            existing_screenshots = list(temp_dir.glob("*.png"))
+            if not existing_screenshots:
+                return
+                
+            logger.info(f"Found {len(existing_screenshots)} existing screenshots to process")
+            
+            # Sort by creation time
+            existing_screenshots.sort(key=lambda p: p.stat().st_ctime)
+            
+            # Add them to pending queue with their creation timestamps
+            for screenshot in existing_screenshots:
+                creation_time = datetime.fromtimestamp(screenshot.stat().st_ctime)
+                self.pending_screenshots[creation_time] = str(screenshot)
+            
+            # Process immediately if we have enough for a batch
+            if len(self.pending_screenshots) >= self.batch_size:
+                logger.info("Processing existing screenshots batch")
+                asyncio.create_task(self.process_batch())
+                
+        except Exception as e:
+            logger.error(f"Error processing existing screenshots: {e}") 

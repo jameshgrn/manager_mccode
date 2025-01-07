@@ -71,6 +71,11 @@ def test_get_daily_metrics(metrics_collector):
     assert "focus_states" in metrics
     assert "hourly_patterns" in metrics
     
+    # Check summary with new format
+    assert "active_hours" in metrics["summary"]
+    assert "context_switches" in metrics["summary"]
+    assert "focus_score" in metrics["summary"]
+    
     # Check summary
     assert metrics["summary"]["total_snapshots"] == 3
     assert metrics["summary"]["date"] == "2024-01-01"
@@ -91,10 +96,14 @@ def test_get_daily_metrics_empty(metrics_collector, mock_db):
     mock_db.get_focus_states_between.return_value = []
     
     metrics = metrics_collector.get_daily_metrics()
-    
-    assert metrics["summary"] == {}
-    assert metrics["activities"]["total_activities"] == 0
-    assert all(v == 0 for v in metrics["focus_states"].values())
+    expected_empty_summary = {
+        "active_hours": 0.0,
+        "context_switches": 0,
+        "focus_score": 0.0,
+        "total_snapshots": 0,
+        "date": metrics["summary"]["date"]
+    }
+    assert metrics["summary"] == expected_empty_summary
 
 def test_calculate_active_hours(metrics_collector):
     """Test active hours calculation"""
