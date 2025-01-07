@@ -559,3 +559,43 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting recent summaries: {e}")
             raise DatabaseError(f"Failed to get recent summaries: {e}") 
+
+    def get_focus_metrics(self, hours: int = 24) -> Dict:
+        """Get focus metrics for the specified time period"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Get average focus score and context switch counts
+            cursor.execute("""
+                SELECT 
+                    AVG(CASE 
+                        WHEN a.attention_level IS NOT NULL THEN a.attention_level 
+                        ELSE 0 
+                    END) as focus_score,
+                    COUNT(CASE 
+                        WHEN a.context_switches = 'high' THEN 1 
+                        ELSE NULL 
+                    END) as high_switches,
+                    COUNT(CASE 
+                        WHEN a.context_switches = 'low' THEN 1 
+                        ELSE NULL 
+                    END) as low_switches
+                FROM activity_snapshots s
+                LEFT JOIN activities a ON s.id = a.snapshot_id
+                WHERE s.timestamp >= datetime('now', ?)
+            """, (f'-{hours} hours',))
+            
+            row = cursor.fetchone()
+            
+            return {
+                'focus_score': float(row[0]) if row[0] is not None else 0.0,
+                'context_switches': {
+                    'high': row[1],
+                    'low': row[2]
+                }
+            }
+                
+        except Exception as e:
+            logger.error(f"Failed to get focus metrics: {e}")
+            raise DatabaseError(f"Failed to get focus metrics: {e}") 

@@ -39,7 +39,7 @@ async def test_capture_analyze_store_flow(test_env):
         mock_grab.return_value = mock_image
         
         # Capture screenshot
-        screenshot_path = await test_env['image_manager'].capture_screenshot()
+        screenshot_path = await test_env['image_manager'].save_screenshot()
         assert screenshot_path.exists()
         
         # Mock Gemini API response
