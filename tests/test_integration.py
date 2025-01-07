@@ -7,7 +7,7 @@ from unittest.mock import patch, Mock
 from manager_mccode.services.image import ImageManager
 from manager_mccode.services.analyzer import GeminiAnalyzer
 from manager_mccode.services.database import DatabaseManager
-from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators
+from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators, Context
 
 @pytest.fixture
 def test_env():
@@ -39,7 +39,7 @@ async def test_capture_analyze_store_flow(test_env):
         mock_grab.return_value = mock_image
         
         # Capture screenshot
-        screenshot_path = await test_env['image_manager'].save_screenshot()
+        screenshot_path = test_env['image_manager'].save_screenshot()
         assert screenshot_path.exists()
         
         # Mock Gemini API response
@@ -72,7 +72,6 @@ async def test_capture_analyze_store_flow(test_env):
 @pytest.mark.asyncio
 async def test_metrics_and_recommendations(test_env):
     """Test retrieving metrics and generating recommendations"""
-    # Store some test data
     db = test_env['db']
     
     # Create test summaries with different focus states
@@ -89,7 +88,12 @@ async def test_metrics_and_recommendations(test_env):
                     workspace_organization="organized"
                 )
             )
-        ]
+        ],
+        context=Context(
+            attention_state="focused",
+            confidence=0.9,
+            environment="office"
+        )
     )
     
     scattered = ScreenSummary(
@@ -105,7 +109,12 @@ async def test_metrics_and_recommendations(test_env):
                     workspace_organization="scattered"
                 )
             )
-        ]
+        ],
+        context=Context(
+            attention_state="scattered",
+            confidence=0.8,
+            environment="home"
+        )
     )
     
     # Store summaries
