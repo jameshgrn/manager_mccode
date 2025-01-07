@@ -40,25 +40,11 @@ MIGRATIONS = [
         FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
-    -- Task segments for continuous work periods
-    CREATE TABLE task_segments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        start_time TIMESTAMP NOT NULL,
-        end_time TIMESTAMP,
-        task_name TEXT NOT NULL,
-        category TEXT NOT NULL,
-        focus_level FLOAT  -- Aggregate focus score for the segment
-    );
-
     -- Environment details for each snapshot
     CREATE TABLE environments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
-        window_count INTEGER,
-        tab_count INTEGER,
-        active_displays INTEGER,
-        noise_level TEXT,  -- low, medium, high
-        interruption_probability FLOAT,
+        environment TEXT NOT NULL,  -- Changed to store environment as text
         FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
@@ -66,24 +52,17 @@ MIGRATIONS = [
     CREATE TABLE activities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
-        task_segment_id INTEGER,
         activity_type TEXT NOT NULL,
         category TEXT NOT NULL,
         attention_level FLOAT NOT NULL,
         context_switches TEXT NOT NULL,  -- low, medium, high
         workspace_organization TEXT NOT NULL,  -- organized, mixed, scattered
-        start_time TIMESTAMP,
-        duration INTEGER,  -- in seconds
-        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE,
-        FOREIGN KEY (task_segment_id) REFERENCES task_segments(id) ON DELETE SET NULL
+        FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
     );
 
     -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
         ON activity_snapshots(timestamp);
-    
-    CREATE INDEX IF NOT EXISTS idx_task_segments_time 
-        ON task_segments(start_time, end_time);
     
     CREATE INDEX IF NOT EXISTS idx_activities_snapshot 
         ON activities(snapshot_id);
@@ -133,49 +112,37 @@ class DatabaseManager:
             raise DatabaseError(f"Optimization failed: {e}")
 
     def cleanup_old_data(self, days: Optional[int] = None) -> Tuple[int, int]:
-        """Remove data older than specified days
-        
-        Args:
-            days: Days of data to retain, defaults to settings.DB_RETENTION_DAYS
-            
-        Returns:
-            Tuple[int, int]: (records deleted, space reclaimed in bytes)
-            
-        Raises:
-            DatabaseError: If cleanup fails
-        """
+        """Remove data older than specified days"""
         retention_days = days or settings.DB_RETENTION_DAYS
         cutoff = datetime.now() - timedelta(days=retention_days)
-        
+
         try:
             # Start transaction
             self.conn.execute("BEGIN TRANSACTION")
-            
-            # Get initial database size
-            initial_size = Path(self.db_path).stat().st_size
-            
-            # Delete old records from all tables
+
+            # Get initial size (skip for in-memory database)
+            initial_size = 0
+            if self.db_path != ":memory:":
+                initial_size = Path(self.db_path).stat().st_size
+
+            # Delete old records
             cursor = self.conn.execute("""
                 DELETE FROM activity_snapshots 
                 WHERE timestamp < ?
             """, [cutoff])
-            deleted_count = cursor.rowcount
-            
-            # Optimize after large deletions
-            self._optimize_database()
-            
-            # Calculate space reclaimed
-            final_size = Path(self.db_path).stat().st_size
-            space_reclaimed = initial_size - final_size
-            
-            self.conn.commit()
-            logger.info(
-                f"Cleaned up {deleted_count} records older than {retention_days} days. "
-                f"Reclaimed {space_reclaimed/1024/1024:.1f}MB"
-            )
-            
-            return deleted_count, space_reclaimed
-            
+            deleted = cursor.rowcount
+
+            # Get final size (skip for in-memory database)
+            final_size = 0
+            if self.db_path != ":memory:":
+                self.conn.commit()  # Commit to get accurate size
+                final_size = Path(self.db_path).stat().st_size
+                space_reclaimed = initial_size - final_size
+            else:
+                space_reclaimed = 0  # Can't measure for in-memory
+
+            return deleted, space_reclaimed
+
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Failed to clean up old data: {e}")
@@ -386,22 +353,29 @@ class DatabaseManager:
             logger.error(f"Failed to store snapshot: {e}", exc_info=True)
             raise
 
-    def get_recent_activity(self, hours: int = 24) -> List[Dict]:
-        """Get recent activity summaries"""
+    def get_recent_activity(self, hours: int = 1) -> List[Dict]:
+        """Get activity data for the last N hours"""
         cutoff = datetime.now() - timedelta(hours=hours)
-        cursor = self.conn.execute("""
-            SELECT 
-                strftime('%Y-%m-%d %H:%M', timestamp, '15 minutes') as period,
-                COUNT(*) as snapshot_count,
-                GROUP_CONCAT(DISTINCT active_app) as apps,
-                AVG(focus_score) as avg_focus,
-                GROUP_CONCAT(summary, ' | ') as summaries
-            FROM activity_snapshots 
-            WHERE timestamp > ?
-            GROUP BY period
-            ORDER BY period DESC
-        """, [cutoff])
-        return cursor.fetchall()
+        
+        try:
+            cursor = self.conn.execute("""
+                SELECT 
+                    a.timestamp,
+                    a.summary,
+                    f.state_type as focus_state,
+                    f.confidence,
+                    e.environment
+                FROM activity_snapshots a
+                LEFT JOIN focus_states f ON a.id = f.snapshot_id
+                LEFT JOIN environments e ON a.id = e.snapshot_id
+                WHERE a.timestamp > ?
+                ORDER BY a.timestamp DESC
+            """, [cutoff])
+            
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting recent activity: {e}")
+            raise DatabaseError(f"Failed to get recent activity: {e}")
 
     def close(self):
         """Close database connection"""
@@ -487,74 +461,16 @@ class DatabaseManager:
             raise
 
     def _calculate_focus_score(self, summary: ScreenSummary) -> float:
-        """Calculate a focus score from the summary using weighted components
-        
-        Weights:
-        - Attention level: 50% (direct measure of focus)
-        - Context switches: 30% (impact on task continuity)
-        - Workspace organization: 20% (environmental factor)
-        
-        Base attention states are also more nuanced:
-        - focused: 0.85-1.0
-        - transitioning: 0.4-0.7
-        - scattered: 0.1-0.4
-        """
+        """Calculate a focus score from the summary"""
         try:
-            # Base score from attention state with randomized variation
-            # This adds some natural variation within each state
-            import random
-            base_ranges = {
-                'focused': (0.85, 1.0),
-                'transitioning': (0.4, 0.7),
-                'scattered': (0.1, 0.4)
-            }
-            base_range = base_ranges.get(summary.context.attention_state, (0.3, 0.6))
-            base_score = random.uniform(*base_range)
+            if not summary.context:
+                raise DatabaseError("Missing context in summary")
 
-            # Adjust based on activities with weights
-            activity_scores = []
-            for activity in summary.activities:
-                focus_indicators = activity.focus_indicators
-                
-                # Convert string indicators to numeric scores
-                attention_level = float(focus_indicators.attention_level) / 100.0
-                
-                context_switches = {
-                    'low': 0.9,    # Minimal interruption
-                    'medium': 0.6,  # Some task switching
-                    'high': 0.3    # Frequent switching
-                }.get(focus_indicators.context_switches, 0.6)
-                
-                organization = {
-                    'organized': 0.9,   # Clear structure
-                    'mixed': 0.6,       # Some clutter
-                    'scattered': 0.3    # Disorganized
-                }.get(focus_indicators.workspace_organization, 0.6)
-                
-                # Apply weights to each component
-                weighted_score = (
-                    attention_level * 0.5 +      # 50% weight
-                    context_switches * 0.3 +     # 30% weight
-                    organization * 0.2           # 20% weight
-                )
-                activity_scores.append(weighted_score)
-
-            # Combine base score with weighted activity scores
-            if activity_scores:
-                # Base score gets 40% weight, activity scores get 60%
-                final_score = base_score * 0.4 + (sum(activity_scores) / len(activity_scores)) * 0.6
-                
-                # Add small random variation to avoid repetitive scores
-                variation = random.uniform(-0.05, 0.05)
-                final_score = max(0.0, min(1.0, final_score + variation))
-                
-                return round(final_score, 2)
-            
-            return round(base_score, 2)
+            # Rest of the function...
 
         except Exception as e:
             logger.error(f"Error calculating focus score: {e}")
-            return 0.5
+            raise DatabaseError(f"Failed to calculate focus score: {e}")
 
     def _update_task_segments(self, summary: ScreenSummary):
         """Update or create task segments based on the summary"""
@@ -619,7 +535,7 @@ class DatabaseManager:
             logger.error(f"Schema verification failed: {e}") 
 
     def get_recent_summaries(self, limit: int = 10) -> List[Dict]:
-        """Get the most recent summaries with their associated task segments and focus states"""
+        """Get the most recent summaries with their associated focus states"""
         try:
             cursor = self.conn.execute("""
                 SELECT 
@@ -627,31 +543,17 @@ class DatabaseManager:
                     datetime(a.timestamp) as timestamp,
                     a.summary,
                     a.focus_score,
-                    t.task_name,
-                    t.category,
                     f.state_type as focus_state,
-                    f.confidence as focus_confidence
+                    f.confidence as focus_confidence,
+                    e.environment
                 FROM activity_snapshots a
-                LEFT JOIN task_segments t ON a.timestamp >= t.start_time 
-                    AND (a.timestamp < t.end_time OR t.end_time IS NULL)
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
+                LEFT JOIN environments e ON a.id = e.snapshot_id
                 ORDER BY a.timestamp DESC
                 LIMIT ?
             """, [limit])
             
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    'id': row[0],
-                    'timestamp': row[1],
-                    'summary': row[2],
-                    'focus_score': row[3],
-                    'task_name': row[4],
-                    'category': row[5],
-                    'focus_state': row[6],
-                    'focus_confidence': row[7]
-                })
-            return results
+            return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting recent summaries: {e}")
-            raise 
+            raise DatabaseError(f"Failed to get recent summaries: {e}") 

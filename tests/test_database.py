@@ -56,8 +56,14 @@ def test_database_integrity(db):
 def test_error_handling(db):
     """Test database error handling"""
     with pytest.raises(DatabaseError):
-        # Force an error by passing invalid data
-        db.store_summary(None)
+        # Create an invalid summary
+        invalid_summary = ScreenSummary(
+            timestamp=datetime.now(),
+            summary="Invalid",
+            activities=[],
+            context=None  # This will cause the error
+        )
+        db.store_summary(invalid_summary)
 
 def test_focus_metrics(db, sample_summary):
     """Test focus metrics calculation"""

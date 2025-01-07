@@ -26,7 +26,12 @@ async def test_batch_processing(batch_processor, temp_dir):
         assert batch_processor.is_batch_ready()
         summaries = await batch_processor.process_batch()
         
-        assert len(summaries) == 0  # Since we don't have Gemini API in tests
+        # We should get summaries since we mocked the API
+        assert len(summaries) == batch_processor.batch_size
+        for summary in summaries:
+            assert summary.summary == "Test"
+            assert len(summary.activities) == 0
+            assert summary.context.attention_state == "Unknown"
 
 @pytest.mark.asyncio
 async def test_batch_timing(batch_processor, temp_dir):

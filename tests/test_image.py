@@ -4,6 +4,7 @@ from PIL import Image
 import io
 from manager_mccode.services.image import ImageManager, ScreenshotError, CompressionError
 import os
+from datetime import datetime, timedelta
 
 def test_save_screenshot(image_manager, temp_dir):
     """Test saving a screenshot"""
@@ -37,11 +38,12 @@ def test_cleanup_old_images(image_manager, temp_dir):
         path = temp_dir / f"screenshot_{i}.jpg"
         Image.new('RGB', (100, 100), color='white').save(path)
     
-    # Set creation time to past
+    # Set creation time to past (1 hour ago)
+    one_hour_ago = datetime.now() - timedelta(hours=1)
     for path in temp_dir.glob("*.jpg"):
-        os.utime(str(path), (0, 0))  # Set access/modify time to epoch
+        os.utime(str(path), (one_hour_ago.timestamp(), one_hour_ago.timestamp()))
     
-    # Clean up
+    # Clean up with max age of 0 minutes (should remove all)
     image_manager.cleanup_old_images(max_age_minutes=0)
     remaining = list(temp_dir.glob("*.jpg"))
     assert len(remaining) == 0

@@ -136,6 +136,7 @@ class ImageManager:
                         count += 1
                     except Exception as e:
                         logger.error(f"Failed to delete {filepath}: {e}")
+                        continue  # Continue with next file even if this one fails
             
             if count > 0:
                 logger.info(f"Cleaned up {count} old screenshots")
