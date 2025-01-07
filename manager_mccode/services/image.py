@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 from manager_mccode.config.settings import settings
+from manager_mccode.config.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -121,43 +122,29 @@ class ImageManager:
             raise CompressionError(f"Failed to compress and save image: {e}")
 
     def cleanup_old_images(self, max_age_minutes: Optional[int] = None) -> None:
-        """Remove screenshots older than max_age_minutes"""
-        max_age = max_age_minutes or settings.DEFAULT_IMAGE_MAX_AGE_MINUTES
-        cutoff = datetime.now() - timedelta(minutes=max_age)
+        """Clean up old screenshot files
         
+        Args:
+            max_age_minutes: Override default retention time
+        """
         try:
-            count = 0
-            for filepath in self.temp_dir.glob("screenshot_*.jpg"):
-                try:
-                    # Use creation time for comparison
-                    creation_time = datetime.fromtimestamp(filepath.stat().st_ctime)
-                    logger.debug(f"Checking file {filepath}, created at {creation_time}, cutoff is {cutoff}")
-                    
-                    # For testing purposes, if the file is from the future, consider it old
-                    if creation_time > datetime.now():
-                        logger.debug(f"File has future timestamp, treating as old")
-                        should_delete = True
-                    else:
-                        should_delete = creation_time < cutoff
-                    
-                    if should_delete:
-                        try:
-                            logger.debug(f"Attempting to delete {filepath}")
-                            filepath.unlink()
-                            count += 1
-                            logger.debug(f"Successfully deleted {filepath}")
-                        except Exception as e:
-                            logger.error(f"Failed to delete {filepath}: {e}")
-                            continue
-                except Exception as e:
-                    logger.error(f"Failed to check {filepath}: {e}")
-                    continue
+            retention = max_age_minutes or config.image.retention_minutes
+            cutoff = datetime.now() - timedelta(minutes=retention)
             
-            if count > 0:
-                logger.info(f"Cleaned up {count} old screenshots")
-                
+            # Get all screenshot files
+            for file in self.temp_dir.glob("screenshot_*.jpg"):
+                try:
+                    # Check file age
+                    mtime = datetime.fromtimestamp(file.stat().st_mtime)
+                    if mtime < cutoff:
+                        file.unlink()
+                        logger.debug(f"Deleted old screenshot: {file}")
+                except Exception as e:
+                    logger.error(f"Error processing file {file}: {e}")
+                    
         except Exception as e:
-            logger.error(f"Error during image cleanup: {e}")
+            logger.error(f"Failed to clean up old images: {e}")
+            raise ScreenshotError(f"Cleanup failed: {e}")
 
     def __del__(self):
         """Cleanup MSS resources"""
