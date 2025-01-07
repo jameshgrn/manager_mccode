@@ -70,21 +70,21 @@ poetry run python -m manager_mccode install
 
 ## Improvement Checklist
 
-### 1. Core Service Stability
-- [ ] Add graceful shutdown handling in `ServiceRunner`
-- [ ] Implement proper error recovery in batch processing
-- [ ] Add health check endpoints for service monitoring
-- [ ] Implement proper cleanup of temporary files
-- [ ] Add service state persistence across restarts
+### 1. Core Service Stability ✅
+- [x] Add graceful shutdown handling in `ServiceRunner`
+- [x] Implement proper error recovery in batch processing
+- [x] Add health check endpoints for service monitoring
+- [x] Implement proper cleanup of temporary files
+- [x] Add service state persistence across restarts
 
-### 2. Configuration Management
-- [ ] Consolidate settings between `config.py` and `settings.py`
-- [ ] Add configuration validation for all settings
-- [ ] Implement environment-specific configs (dev/prod)
-- [ ] Add dynamic config reloading
-- [ ] Document all configuration options
+### 2. Configuration Management ✅
+- [x] Consolidate settings between `config.py` and `settings.py`
+- [x] Add configuration validation for all settings
+- [x] Implement environment-specific configs (dev/prod)
+- [x] Add dynamic config reloading
+- [x] Document all configuration options
 
-### 3. Performance Optimization
+### 3. Performance Optimization 🚧
 - [ ] Implement screenshot compression optimization
 - [ ] Add batch processing queue management
 - [ ] Optimize database queries and indexing
@@ -200,4 +200,12 @@ manager_mccode/
 ├── web/            # Web interface (planned)
 └── main.py         # Application entry point
 ```
+
+## Recent Updates
+
+### v0.1.1
+- Implemented robust service runner with graceful shutdown
+- Consolidated configuration system using Pydantic V2
+- Added comprehensive error handling and recovery
+- Improved logging and cleanup procedures
 

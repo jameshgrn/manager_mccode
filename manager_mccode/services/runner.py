@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from manager_mccode.config.config import config
+from manager_mccode.config.settings import settings
 from manager_mccode.services.database import DatabaseManager
 from manager_mccode.services.image import ImageManager
 from manager_mccode.services.batch import BatchProcessor
@@ -16,131 +16,164 @@ from manager_mccode.services.analyzer import GeminiAnalyzer
 logger = logging.getLogger(__name__)
 
 class ServiceRunner:
+    """Main service runner with graceful shutdown handling"""
+    
     def __init__(self):
         self.running = False
+        self.shutdown_event = asyncio.Event()
         self._setup_logging()
+        
+        # Initialize core services
         self.db = DatabaseManager()
         self.image_manager = ImageManager()
         self.batch_processor = BatchProcessor()
         self.analyzer = GeminiAnalyzer()
         
+        # Track service state
+        self.last_screenshot_time: Optional[datetime] = None
+        self.last_batch_time: Optional[datetime] = None
+        self.last_cleanup_time: Optional[datetime] = None
+        self.error_count = 0
+        
+        # Constants
+        self.MAX_ERRORS = 3
+        self.CLEANUP_INTERVAL_HOURS = 24
+        
     def _setup_logging(self):
         """Configure logging for background service"""
-        config.log_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
         
-        # File handler with full logging
-        file_handler = logging.FileHandler(config.log_file)
-        file_handler.setLevel(logging.INFO)
+        file_handler = logging.FileHandler(settings.LOG_DIR / "manager_mccode.log")
         file_handler.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
         
-        # Console handler with minimal logging
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.WARNING)  # Only show warnings and errors
+        console_handler = logging.StreamHandler()
         console_handler.setFormatter(logging.Formatter('%(message)s'))
         
-        # Configure root logger
         root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
-        root_logger.handlers = []  # Remove existing handlers
+        root_logger.setLevel(logging.INFO if not settings.DEBUG else logging.DEBUG)
         root_logger.addHandler(file_handler)
         root_logger.addHandler(console_handler)
     
-    def _write_pid(self):
-        """Write PID file"""
-        config.pid_file.write_text(str(os.getpid()))
+    def _setup_signal_handlers(self):
+        """Set up handlers for system signals"""
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            asyncio.get_event_loop().add_signal_handler(
+                sig,
+                lambda s=sig: asyncio.create_task(self.shutdown(sig))
+            )
     
-    def _cleanup_pid(self):
-        """Remove PID file"""
+    async def shutdown(self, sig: Optional[signal.Signals] = None):
+        """Gracefully shutdown the service"""
+        if sig:
+            logger.info(f"Received exit signal {sig.name}...")
+        
+        logger.info("Initiating graceful shutdown...")
+        self.running = False
+        self.shutdown_event.set()
+        
+        # Wait for batch processing to complete
+        if self.batch_processor.is_processing:
+            logger.info("Waiting for batch processing to complete...")
+            await self.batch_processor.wait_until_done()
+        
+        # Cleanup resources
         try:
-            config.pid_file.unlink(missing_ok=True)
+            await self.cleanup()
+            logger.info("Cleanup completed successfully")
         except Exception as e:
-            logger.error(f"Failed to remove PID file: {e}")
+            logger.error(f"Error during cleanup: {e}")
     
-    async def start(self):
-        """Start the service"""
+    async def cleanup(self):
+        """Cleanup service resources"""
+        tasks = []
+        
+        # Cleanup image manager
+        if self.image_manager:
+            tasks.append(self.image_manager.cleanup())
+        
+        # Close database connections
+        if self.db:
+            tasks.append(asyncio.to_thread(self.db.close))
+        
+        # Wait for all cleanup tasks
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def run(self):
+        """Run the service"""
+        logger.info("Starting Manager McCode service...")
+        self._setup_signal_handlers()
+        self.running = True
+        
         try:
-            self._write_pid()
-            self.running = True
-            
-            # Handle shutdown signals
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                asyncio.get_event_loop().add_signal_handler(
-                    sig,
-                    lambda s=sig: asyncio.create_task(self.shutdown(s))
-                )
-            
-            logger.info("Starting Manager McCode service...")
-            
-            # Wait for initial batch processing to complete
-            if self.batch_processor.pending_screenshots:
-                logger.info("Processing existing screenshots before starting capture...")
-                await self.batch_processor.process_batch()
-            
-            error_count = 0
-            last_error_time = None
-            
             while self.running:
                 try:
-                    current_time = datetime.now()
-                    
-                    # Reset error count if enough time has passed
-                    if last_error_time and (current_time - last_error_time).seconds > config.error_reset_interval:
-                        error_count = 0
-                    
                     # Take screenshot
                     screenshot_path = await self.image_manager.capture_screenshot()
-                    if screenshot_path:
-                        self.batch_processor.add_screenshot(screenshot_path)
+                    self.last_screenshot_time = datetime.now()
+                    
+                    # Add to batch processor
+                    self.batch_processor.add_screenshot(screenshot_path)
                     
                     # Process batch if ready
                     if self.batch_processor.is_batch_ready():
                         summaries = await self.batch_processor.process_batch()
-                        for summary in summaries:
-                            self.db.store_summary(summary)
+                        if summaries:
+                            await asyncio.to_thread(self.db.store_summaries, summaries)
                     
-                    await asyncio.sleep(config.screenshot_interval)
+                    # Periodic cleanup
+                    await self._maybe_cleanup()
                     
+                    # Reset error count on successful iteration
+                    self.error_count = 0
+                    
+                    # Wait for next interval or shutdown
+                    try:
+                        await asyncio.wait_for(
+                            self.shutdown_event.wait(),
+                            timeout=settings.SCREENSHOT_INTERVAL_SECONDS
+                        )
+                        if self.shutdown_event.is_set():
+                            break
+                    except asyncio.TimeoutError:
+                        continue
+                        
                 except Exception as e:
-                    error_count += 1
-                    last_error_time = current_time
+                    self.error_count += 1
                     logger.error(f"Error in main loop: {e}", exc_info=True)
                     
-                    if error_count >= config.max_errors:
-                        logger.critical(f"Too many errors ({error_count}), shutting down...")
-                        self.running = False
+                    if self.error_count >= self.MAX_ERRORS:
+                        logger.critical(f"Too many errors ({self.error_count}), initiating shutdown...")
+                        await self.shutdown()
                         break
-                        
-                    await asyncio.sleep(5)  # Brief pause after error
+                    
+                    # Brief pause before retry
+                    await asyncio.sleep(1)
             
-        except Exception as e:
-            logger.error(f"Service failed: {e}", exc_info=True)
-            raise
         finally:
-            await self.shutdown()
+            if self.running:  # If we didn't already shutdown
+                await self.shutdown()
     
-    async def shutdown(self, sig: Optional[signal.Signals] = None):
-        """Shutdown the service"""
-        if sig:
-            logger.info(f"Received signal {sig.name}, shutting down...")
-        
-        self.running = False
-        
-        try:
-            await self.image_manager.cleanup()
-            self.db.close()
-            logger.info("Cleanup completed")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-        
-        self._cleanup_pid()
-        logger.info("Service stopped")
+    async def _maybe_cleanup(self):
+        """Perform periodic cleanup if needed"""
+        now = datetime.now()
+        if (not self.last_cleanup_time or 
+            (now - self.last_cleanup_time).total_seconds() > self.CLEANUP_INTERVAL_HOURS * 3600):
+            
+            logger.info("Running periodic cleanup...")
+            await self.image_manager.cleanup_old_images()
+            await asyncio.to_thread(self.db.cleanup_old_data)
+            self.last_cleanup_time = now
+
+# Global service runner instance
+service_runner = ServiceRunner()
 
 def run_service():
     """Entry point for running the service"""
     runner = ServiceRunner()
-    asyncio.run(runner.start())
+    asyncio.run(runner.run())
 
 if __name__ == "__main__":
     run_service() 
