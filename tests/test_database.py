@@ -67,8 +67,15 @@ def test_focus_metrics(db, sample_summary):
     # Store summaries with different focus states
     focused = sample_summary.model_copy()
     focused.context.attention_state = "focused"
+    logger.info(f"Created focused summary with state: {focused.context.attention_state}")
+    
     scattered = sample_summary.model_copy()
     scattered.context.attention_state = "scattered"
+    logger.info(f"Created scattered summary with state: {scattered.context.attention_state}")
+
+    # Verify the states are different before storing
+    assert focused.context.attention_state != scattered.context.attention_state, \
+        f"Focus states should be different before storing. Found: focused={focused.context.attention_state}, scattered={scattered.context.attention_state}"
 
     # Store the summaries
     focused_id = db.store_summary(focused)
@@ -76,6 +83,24 @@ def test_focus_metrics(db, sample_summary):
     
     logger.info(f"Stored focused summary with ID: {focused_id}")
     logger.info(f"Stored scattered summary with ID: {scattered_id}")
+
+    # Verify directly in the database that states were stored correctly
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT a.id, f.state_type 
+        FROM activity_snapshots a
+        JOIN focus_states f ON a.id = f.snapshot_id
+        WHERE a.id IN (?, ?)
+    """, (focused_id, scattered_id))
+    
+    stored_states = dict(cursor.fetchall())
+    logger.info(f"Directly queried states from database: {stored_states}")
+    
+    assert stored_states[focused_id] == "focused", \
+        f"Focused state not stored correctly. Expected 'focused', got '{stored_states.get(focused_id)}'"
+    assert stored_states[scattered_id] == "scattered", \
+        f"Scattered state not stored correctly. Expected 'scattered', got '{stored_states.get(scattered_id)}'"
 
     # Get recent activity
     activity = db.get_recent_activity(hours=24)

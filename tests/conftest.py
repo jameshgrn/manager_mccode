@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 import tempfile
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from manager_mccode.services.database import DatabaseManager
 from manager_mccode.services.image import ImageManager
 from manager_mccode.services.batch import BatchProcessor
@@ -37,17 +37,16 @@ def batch_processor():
 
 @pytest.fixture
 def sample_summary():
-    """Provide a sample ScreenSummary for testing"""
+    """Create a sample screen summary for testing"""
     return ScreenSummary(
-        timestamp=datetime.now(),
+        timestamp=datetime.now() + timedelta(days=365),  # Future date to avoid cleanup
         summary="Test activity summary",
         activities=[
             Activity(
-                name="Coding",
+                name="coding",
                 category="development",
-                purpose="Writing tests",
                 focus_indicators=FocusIndicators(
-                    attention_level=85,
+                    attention_level=0.8,
                     context_switches="low",
                     workspace_organization="organized"
                 )
@@ -55,7 +54,7 @@ def sample_summary():
         ],
         context=Context(
             primary_task="Writing unit tests",
-            attention_state="focused",
+            attention_state="scattered",  # Default state
             environment="Single monitor setup",
             confidence=0.9
         )
