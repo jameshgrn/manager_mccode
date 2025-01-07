@@ -1,7 +1,7 @@
 import json
 import google.generativeai as genai
 from datetime import datetime
-from manager_mccode.models.screen_summary import ScreenSummary
+from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators
 from manager_mccode.config.settings import settings
 import os
 
