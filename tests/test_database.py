@@ -3,8 +3,43 @@ from datetime import datetime, timedelta
 from manager_mccode.services.database import DatabaseManager, DatabaseError
 from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators, Context
 import logging
+from dataclasses import replace
+import copy
 
 logger = logging.getLogger(__name__)
+
+@pytest.fixture
+def db():
+    """Create a fresh in-memory database for each test"""
+    db = DatabaseManager(":memory:")
+    db.initialize()  # Explicitly initialize
+    db.conn.commit()  # Ensure changes are committed
+    return db
+
+@pytest.fixture
+def sample_summary():
+    """Create a sample screen summary for testing"""
+    return ScreenSummary(
+        timestamp=datetime(2026, 1, 7, 15, 16, 19, 987874),
+        summary="Test activity summary",
+        activities=[
+            Activity(
+                name="Writing tests",
+                category="Development",
+                focus_indicators=FocusIndicators(
+                    attention_level=75,
+                    context_switches="low",
+                    workspace_organization="organized"
+                )
+            )
+        ],
+        context=Context(
+            primary_task="Writing unit tests",
+            attention_state="scattered",
+            environment="Single monitor setup",
+            confidence=0.9
+        )
+    )
 
 def test_store_and_retrieve_summary(db, sample_summary):
     """Test storing and retrieving a complete summary"""
@@ -24,21 +59,21 @@ def test_store_and_retrieve_summary(db, sample_summary):
 def test_cleanup_old_data(db, sample_summary):
     """Test cleaning up old data"""
     # Store some old and new summaries
-    old_summary = sample_summary.model_copy()
+    old_summary = copy.deepcopy(sample_summary)
     old_summary.timestamp = datetime.now() - timedelta(days=40)
     db.store_summary(old_summary)
     
-    new_summary = sample_summary.model_copy()
+    new_summary = copy.deepcopy(sample_summary)
+    new_summary.timestamp = datetime.now()
     db.store_summary(new_summary)
     
-    # Clean up old data
-    deleted, space = db.cleanup_old_data(days=30)
-    assert deleted >= 1
+    # Run cleanup
+    db.cleanup_old_data(days=30)
     
-    # Check that only old data was removed
+    # Verify
     summaries = db.get_recent_summaries()
-    timestamps = [datetime.fromisoformat(s['timestamp']) for s in summaries]
-    assert all(t > datetime.now() - timedelta(days=30) for t in timestamps)
+    assert len(summaries) == 1
+    assert summaries[0]['timestamp'] > (datetime.now() - timedelta(days=30))
 
 def test_database_stats(db, sample_summary):
     """Test getting database statistics"""
@@ -88,54 +123,31 @@ def test_focus_metrics(db, sample_summary):
             confidence=sample_summary.context.confidence
         )
     )
-
-    logger.info(f"Created focused summary with state: {focused.context.attention_state}")
-    logger.info(f"Created scattered summary with state: {scattered.context.attention_state}")
-
-    # Verify the states are different before storing
-    assert focused.context.attention_state != scattered.context.attention_state, \
-        f"Focus states should be different before storing. Found: focused={focused.context.attention_state}, scattered={scattered.context.attention_state}"
-
+    
     # Store the summaries
     focused_id = db.store_summary(focused)
     scattered_id = db.store_summary(scattered)
     
-    logger.info(f"Stored focused summary with ID: {focused_id}")
-    logger.info(f"Stored scattered summary with ID: {scattered_id}")
-
     # Verify directly in the database that states were stored correctly
-    conn = db.get_connection()
-    cursor = conn.cursor()
+    cursor = db.conn.cursor()
     cursor.execute("""
-        SELECT a.id, f.state_type 
+        SELECT a.id, f.state_type
         FROM activity_snapshots a
         JOIN focus_states f ON a.id = f.snapshot_id
         WHERE a.id IN (?, ?)
     """, (focused_id, scattered_id))
     
-    stored_states = dict(cursor.fetchall())
-    logger.info(f"Directly queried states from database: {stored_states}")
+    results = cursor.fetchall()
+    assert len(results) == 2
+    states = {row[0]: row[1] for row in results}
+    assert states[focused_id] == "focused"
+    assert states[scattered_id] == "scattered"
     
-    assert stored_states[focused_id] == "focused", \
-        f"Focused state not stored correctly. Expected 'focused', got '{stored_states.get(focused_id)}'"
-    assert stored_states[scattered_id] == "scattered", \
-        f"Scattered state not stored correctly. Expected 'scattered', got '{stored_states.get(scattered_id)}'"
-
     # Get recent activity
     activity = db.get_recent_activity(hours=24)
+    assert len(activity) == 2  # Should have both summaries
     
-    # Debug output
-    logger.info(f"Retrieved {len(activity)} activities")
-    for a in activity:
-        logger.info(f"Activity: {a}")
-
-    # Assertions with better error messages
-    assert len(activity) > 0, f"No activity records found. Expected at least 2 records (IDs: {focused_id}, {scattered_id})"
-    
+    # Verify activity data
     focus_states = [a['focus_state'] for a in activity]
-    logger.info(f"Found focus states: {focus_states}")
-    
-    assert any(a['focus_state'] == 'focused' for a in activity), \
-        f"No focused state found. Found states: {focus_states}"
-    assert any(a['focus_state'] == 'scattered' for a in activity), \
-        f"No scattered state found. Found states: {focus_states}" 
+    assert "focused" in focus_states
+    assert "scattered" in focus_states 
