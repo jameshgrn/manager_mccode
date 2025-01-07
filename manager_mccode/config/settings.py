@@ -21,3 +21,7 @@ SCREENSHOT_INTERVAL_SECONDS = 10
 
 # Cleanup settings
 DEFAULT_IMAGE_MAX_AGE_MINUTES = 60 
+
+# Error handling settings
+MAX_ERRORS = 5
+ERROR_RESET_INTERVAL = 300  # 5 minutes 

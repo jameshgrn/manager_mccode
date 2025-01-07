@@ -1,6 +1,7 @@
 from datetime import datetime
-from typing import List
-from manager_mccode.models.screen_summary import ScreenSummary
+from typing import List, Dict
+import logging
+from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators, Context
 from manager_mccode.config.settings import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_BATCH_INTERVAL_SECONDS,
@@ -10,6 +11,8 @@ import google.generativeai as genai
 import os
 import json
 
+logger = logging.getLogger(__name__)
+
 class BatchProcessor:
     def __init__(
         self,
@@ -18,8 +21,31 @@ class BatchProcessor:
     ):
         self.batch_size = batch_size
         self.batch_interval = batch_interval_seconds
-        self.pending_screenshots = []
+        self.pending_screenshots: Dict[datetime, List[str]] = {}  # timestamp -> list of screenshot paths
         self.last_batch_time = datetime.now()
+
+    def add_screenshot(self, screenshot_path: str):
+        """Add a screenshot to the pending batch"""
+        current_time = datetime.now()
+        
+        # Group screenshots taken at the same time (within 1 second)
+        matching_time = None
+        for timestamp in self.pending_screenshots.keys():
+            if abs((current_time - timestamp).total_seconds()) < 1:
+                matching_time = timestamp
+                break
+        
+        if matching_time:
+            self.pending_screenshots[matching_time].append(screenshot_path)
+        else:
+            self.pending_screenshots[current_time] = [screenshot_path]
+            
+        logger.debug(f"Added screenshot to batch. Current size: {len(self.pending_screenshots)}")
+
+    def is_batch_ready(self) -> bool:
+        """Check if we have enough screenshots to process a batch"""
+        return len(self.pending_screenshots) >= DEFAULT_BATCH_SIZE or \
+            (datetime.now() - self.last_batch_time).total_seconds() >= self.batch_interval
 
     async def process_batch(self) -> List[ScreenSummary]:
         """Process a batch of screenshots"""
@@ -27,15 +53,15 @@ class BatchProcessor:
             return []
 
         try:
-            # Limit batch size
-            batch = self.pending_screenshots[:self.batch_size]
-            self.pending_screenshots = self.pending_screenshots[self.batch_size:]
+            # Get timestamps sorted by time
+            timestamps = sorted(self.pending_screenshots.keys())
+            batch_timestamps = timestamps[:self.batch_size]
             
-            # Process each screenshot individually to avoid payload size issues
+            # Process each set of screenshots
             summaries = []
-            for screenshot in batch:
+            for timestamp in batch_timestamps:
+                screenshot_paths = self.pending_screenshots[timestamp]
                 try:
-                    # Create model with configuration
                     model = genai.GenerativeModel(
                         model_name=GEMINI_MODEL_NAME,
                         generation_config=genai.types.GenerationConfig(
@@ -45,49 +71,55 @@ class BatchProcessor:
                         )
                     )
 
-                    with open(screenshot['path'], 'rb') as img_file:
-                        image_part = {
-                            "mime_type": "image/jpeg",
-                            "data": img_file.read()
-                        }
+                    # Load all images for this timestamp
+                    image_parts = []
+                    for path in screenshot_paths:
+                        with open(path, 'rb') as img_file:
+                            image_parts.append({
+                                "mime_type": "image/jpeg",
+                                "data": img_file.read()
+                            })
 
                     prompt = """
-                    You are an observant academic productivity analyst. Analyze this screenshot of academic work.
+                    You are an observant academic productivity analyst. Analyze these screenshots of academic work across multiple monitors.
+                    Consider the entire workspace setup and how multiple screens are being utilized.
                     Focus on visible applications, content, and activities, particularly noting:
 
-                    1. What applications and windows are open
+                    1. What applications and windows are open across all screens
                     2. The nature of the work being done (subject area, specific task)
                     3. Signs of focus or distraction (window arrangement, tab count)
                     4. Context switching patterns
-                    5. Work environment (time of day, screen layout)
+                    5. Work environment (time of day, screen layout, monitor usage)
+                    6. How the multiple monitors are being utilized (e.g., reference material on one screen, main work on another)
 
-                    Think like an academic productivity coach who understands ADHD work patterns.
+                    Think like an academic productivity coach who understands ADHD work patterns and multi-monitor setups.
                     
-                    Respond with ONLY valid JSON in this exact format (no markdown, no backticks):
+                    Provide your analysis in the following JSON format:
                     {
-                        "summary": "<detailed 1-2 sentence summary including work context and attention patterns>",
+                        "summary": "<overall analysis of work patterns and focus>",
                         "activities": [
                             {
-                                "name": "<specific_app_or_activity>",
-                                "category": "<inferred_category>",
-                                "purpose": "<brief_purpose_description>",
+                                "name": "<activity name>",
+                                "category": "coding|writing|research|communication|other",
+                                "purpose": "<activity purpose>",
                                 "focus_indicators": {
-                                    "window_state": "foreground|background|minimized",
-                                    "tab_count": "<number_if_browser>",
-                                    "content_type": "<document|code|communication|etc>"
+                                    "attention_level": 0-100,
+                                    "context_switches": "low|medium|high",
+                                    "workspace_organization": "organized|scattered|mixed"
                                 }
                             }
                         ],
                         "context": {
                             "primary_task": "<main task being worked on>",
                             "attention_state": "focused|scattered|transitioning",
-                            "environment": "<relevant environmental factors>"
+                            "environment": "<relevant environmental factors including monitor usage>"
                         }
                     }
                     """
 
+                    # Pass all images to the model at once
                     response = model.generate_content(
-                        contents=[prompt, image_part],
+                        contents=[prompt] + image_parts,
                         stream=False
                     )
 
@@ -105,7 +137,7 @@ class BatchProcessor:
                             context = Context(**result['context'])
                             
                             summaries.append(ScreenSummary(
-                                timestamp=screenshot['timestamp'],
+                                timestamp=timestamp,
                                 summary=result['summary'],
                                 activities=activities,
                                 context=context
@@ -115,25 +147,25 @@ class BatchProcessor:
                             logger.error(f"Raw result: {result}")
 
                 except Exception as e:
-                    print(f"Error processing individual screenshot: {e}")
+                    logger.error(f"Error processing screenshots for timestamp {timestamp}: {e}")
                 finally:
-                    # Clean up the screenshot
-                    if os.path.exists(screenshot['path']):
-                        os.remove(screenshot['path'])
+                    # Clean up the screenshots
+                    for path in screenshot_paths:
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except Exception as e:
+                            logger.error(f"Error cleaning up screenshot {path}: {e}")
+
+            # Remove processed timestamps
+            for timestamp in batch_timestamps:
+                del self.pending_screenshots[timestamp]
 
             return summaries
 
         except Exception as e:
-            print(f"Batch processing error: {e}")
+            logger.error(f"Batch processing error: {e}")
             return []
-        finally:
-            # Ensure any remaining screenshots are cleaned up
-            for screenshot in batch:
-                try:
-                    if os.path.exists(screenshot['path']):
-                        os.remove(screenshot['path'])
-                except Exception as e:
-                    print(f"Error cleaning up screenshot: {e}")
 
     def _parse_response(self, response_text: str) -> dict:
         """Parse the response text into a structured format"""
@@ -158,7 +190,7 @@ class BatchProcessor:
             return result
             
         except Exception as e:
-            print(f"Error parsing response: {e}")
+            logger.error(f"Error parsing response: {e}")
             return {
                 'summary': f"Error parsing response: {str(e)}",
                 'activities': ["Error"]

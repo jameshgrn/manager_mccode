@@ -3,14 +3,19 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from manager_mccode.config.logging_config import setup_logging
 from manager_mccode.services.database import DatabaseManager
 from rich.console import Console
 from rich.table import Table
 from datetime import datetime, timedelta
+import logging
+import asyncio
 
 @click.group()
 def cli():
     """Manager McCode Service Controller"""
+    # Set up logging before anything else
+    setup_logging()
     pass
 
 @cli.command()
@@ -72,20 +77,30 @@ def install():
 @cli.command()
 def start():
     """Start the Manager McCode service"""
-    if sys.platform == 'darwin':
-        subprocess.run(['launchctl', 'start', 'com.jake.manager-mccode'])
-    elif sys.platform.startswith('linux'):
-        subprocess.run(['systemctl', 'start', f'manager-mccode@{os.getenv("USER")}'])
-    click.echo("Service started!")
+    try:
+        if sys.platform == 'darwin':
+            subprocess.run(['launchctl', 'start', 'com.jake.manager-mccode'])
+        elif sys.platform.startswith('linux'):
+            subprocess.run(['systemctl', 'start', f'manager-mccode@{os.getenv("USER")}'])
+        click.echo("Service started!")
+    except Exception as e:
+        logging.error(f"Failed to start service: {e}")
+        sys.exit(1)
 
 @cli.command()
 def stop():
     """Stop the Manager McCode service"""
-    if sys.platform == 'darwin':
-        subprocess.run(['launchctl', 'stop', 'com.jake.manager-mccode'])
-    elif sys.platform.startswith('linux'):
-        subprocess.run(['systemctl', 'stop', f'manager-mccode@{os.getenv("USER")}'])
-    click.echo("Service stopped!")
+    try:
+        if sys.platform == 'darwin':
+            subprocess.run(['launchctl', 'stop', 'com.jake.manager-mccode'])
+        elif sys.platform.startswith('linux'):
+            subprocess.run(['systemctl', 'stop', f'manager-mccode@{os.getenv("USER")}'])
+        if os.path.exists("manager_mccode.db"):
+            os.remove("manager_mccode.db")
+        click.echo("Service stopped!")
+    except Exception as e:
+        logging.error(f"Failed to stop service: {e}")
+        sys.exit(1)
 
 @cli.command()
 def status():
@@ -140,6 +155,60 @@ def inspect():
     console.print(f"Total Time Periods: {total_periods} (15-min blocks)")
     console.print(f"Total Snapshots: {total_snapshots}")
     console.print(f"Unique Activities: {len(all_activities)}")
+
+@cli.command()
+def check():
+    """Detailed check of the service status"""
+    try:
+        console = Console()
+        
+        # Check if process is running
+        if sys.platform == 'darwin':
+            result = subprocess.run(['pgrep', '-f', 'manager_mccode'], capture_output=True)
+            is_running = result.returncode == 0
+        elif sys.platform.startswith('linux'):
+            result = subprocess.run(['systemctl', 'is-active', f'manager-mccode@{os.getenv("USER")}'], capture_output=True)
+            is_running = result.returncode == 0
+            
+        # Check log file
+        log_file = Path("logs/manager_mccode.log")
+        recent_logs = []
+        if log_file.exists():
+            with open(log_file) as f:
+                recent_logs = list(f)[-10:]  # Get last 10 lines
+                
+        # Check screenshots directory
+        screenshots_dir = Path("temp_screenshots")
+        screenshot_count = len(list(screenshots_dir.glob("*.png"))) if screenshots_dir.exists() else 0
+        
+        # Display status
+        console.print("\n[bold cyan]Service Status Check[/bold cyan]")
+        console.print(f"Process running: [{'green' if is_running else 'red'}]{is_running}[/]")
+        console.print(f"Screenshot count: {screenshot_count}")
+        console.print("\n[bold yellow]Recent Logs:[/bold yellow]")
+        for log in recent_logs:
+            console.print(log.strip())
+            
+    except Exception as e:
+        logging.error(f"Status check failed: {e}")
+        sys.exit(1)
+
+@cli.command()
+def debug():
+    """Run the service in debug mode"""
+    try:
+        console = Console()
+        console.print("[yellow]Starting Manager McCode in debug mode...[/yellow]")
+        
+        # Set debug logging
+        logging.getLogger().setLevel(logging.DEBUG)
+        
+        # Run the main process directly
+        from manager_mccode.main import main
+        asyncio.run(main())
+    except Exception as e:
+        logging.error(f"Debug mode failed: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == '__main__':
     cli() 
