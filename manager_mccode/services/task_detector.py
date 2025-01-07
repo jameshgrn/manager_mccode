@@ -33,6 +33,14 @@ class TaskDetector:
     def detect_task_context(self, summary: ScreenSummary) -> Context:
         """Analyze screen summary to detect task context"""
         try:
+            if not summary.activities:  # First check for empty activities
+                return Context(
+                    primary_task="unknown",
+                    attention_state="unknown",
+                    confidence=0.0,
+                    environment="unknown"
+                )
+            
             # Extract activity names
             activity_names = [a.name.lower() for a in summary.activities]
             
@@ -66,17 +74,29 @@ class TaskDetector:
 
     def _detect_primary_task(self, activity_names: List[str]) -> str:
         """Detect primary task category from activities"""
+        if not activity_names:  # First check if empty
+            return "unknown"
+        
         task_scores = {category: 0 for category in self.task_patterns}
         
+        # Count matches for each category
         for activity in activity_names:
+            matched = False
             for category, patterns in self.task_patterns.items():
                 if any(pattern in activity for pattern in patterns):
                     task_scores[category] += 1
+                    matched = True
+            if not matched:  # If no patterns matched this activity
+                task_scores["unknown"] = task_scores.get("unknown", 0) + 1
         
-        if not task_scores:
+        if not task_scores or max(task_scores.values()) == 0:
             return "unknown"
-            
-        return max(task_scores.items(), key=lambda x: x[1])[0]
+        
+        # Get category with highest score
+        max_score = max(task_scores.values())
+        max_categories = [cat for cat, score in task_scores.items() if score == max_score]
+        
+        return max_categories[0] if max_categories else "unknown"
 
     def _analyze_focus_state(self, activities: List[Activity]) -> str:
         """Analyze focus state from activities"""
@@ -100,18 +120,21 @@ class TaskDetector:
         """Calculate confidence score for the detection"""
         if not activities:
             return 0.0
-            
+        
         # Base confidence on consistency of indicators
         attention_levels = [a.focus_indicators.attention_level for a in activities]
         attention_std = self._calculate_std(attention_levels)
         
         # Higher standard deviation = lower confidence
-        base_confidence = max(0.0, 1.0 - (attention_std / 100))
+        # Adjusted formula to give higher base confidence
+        base_confidence = max(0.0, 1.0 - (attention_std / 50))  # Changed from 100 to 50
         
         # Adjust based on number of activities (more data = higher confidence)
-        activity_factor = min(1.0, len(activities) / 5)
+        # Adjusted to give more weight to activity count
+        activity_factor = min(1.0, len(activities) / 3)  # Changed from 5 to 3
         
-        return base_confidence * activity_factor
+        # Combine factors with higher weight on base_confidence
+        return (base_confidence * 0.7 + activity_factor * 0.3)
 
     def _detect_environment(self, activity_names: List[str]) -> str:
         """Detect working environment from activities"""
