@@ -20,19 +20,35 @@ class FocusIndicators(BaseModel):
     content_type: Optional[str] = None
 
 class Activity(BaseModel):
-    name: str
-    category: str
-    purpose: str
-    focus_indicators: FocusIndicators
+    """Activity details"""
+    name: str = Field(description="Name of the activity")
+    category: str = Field(description="Category of the activity")
+    purpose: Optional[str] = Field(
+        default="Unknown",
+        description="Purpose or goal of the activity"
+    )
+    focus_indicators: FocusIndicators = Field(
+        description="Focus and attention indicators for this activity"
+    )
 
 class Context(BaseModel):
-    primary_task: str
-    attention_state: str
-    environment: str
-    confidence: float = 0.5  # Default confidence value
+    """Context information for the screen summary"""
+    primary_task: str = Field(description="Primary task being performed")
+    attention_state: str = Field(description="Current attention state (focused/scattered)")
+    environment: str = Field(description="Description of work environment")
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for the context assessment"
+    )
 
 class ScreenSummary(BaseModel):
-    timestamp: datetime
-    summary: str
-    activities: List[Activity]
-    context: Optional[Context] = None 
+    """Summary of screen activity and context"""
+    timestamp: datetime = Field(description="When this summary was captured")
+    summary: str = Field(description="Text summary of the screen activity")
+    activities: List[Activity] = Field(description="List of detected activities")
+    context: Optional[Context] = Field(
+        default=None,
+        description="Contextual information about the activities"
+    ) 

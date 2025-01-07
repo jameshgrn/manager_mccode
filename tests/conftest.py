@@ -45,6 +45,7 @@ def sample_summary():
             Activity(
                 name="coding",
                 category="development",
+                purpose="Writing tests",
                 focus_indicators=FocusIndicators(
                     attention_level=80,
                     context_switches="low",
