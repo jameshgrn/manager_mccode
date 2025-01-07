@@ -58,7 +58,7 @@ class ImageManager:
         try:
             # Capture screenshot directly as bytes
             try:
-                screenshot = self.sct.grab(self.sct.monitors[1])  # Primary monitor
+                screenshot = self.sct.grab(self.sct.monitors[0])  # Primary monitor (index 0)
             except Exception as e:
                 raise ScreenshotError(f"Failed to grab screenshot: {e}")
             
