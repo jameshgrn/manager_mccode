@@ -2,6 +2,9 @@ import pytest
 from datetime import datetime, timedelta
 from manager_mccode.services.database import DatabaseManager, DatabaseError
 from manager_mccode.models.screen_summary import ScreenSummary
+import logging
+
+logger = logging.getLogger(__name__)
 
 def test_store_and_retrieve_summary(db, sample_summary):
     """Test storing and retrieving a complete summary"""
@@ -68,11 +71,27 @@ def test_focus_metrics(db, sample_summary):
     scattered.context.attention_state = "scattered"
 
     # Store the summaries
-    db.store_summary(focused)
-    db.store_summary(scattered)
+    focused_id = db.store_summary(focused)
+    scattered_id = db.store_summary(scattered)
+    
+    logger.info(f"Stored focused summary with ID: {focused_id}")
+    logger.info(f"Stored scattered summary with ID: {scattered_id}")
 
-    # Get recent activity - use a larger time window for testing
-    activity = db.get_recent_activity(hours=24)  # Increased from 1 hour to 24 hours
-    assert len(activity) > 0, "No activity records found"
-    assert any(a['focus_state'] == 'focused' for a in activity), "No focused state found"
-    assert any(a['focus_state'] == 'scattered' for a in activity), "No scattered state found" 
+    # Get recent activity
+    activity = db.get_recent_activity(hours=24)
+    
+    # Debug output
+    logger.info(f"Retrieved {len(activity)} activities")
+    for a in activity:
+        logger.info(f"Activity: {a}")
+
+    # Assertions with better error messages
+    assert len(activity) > 0, f"No activity records found. Expected at least 2 records (IDs: {focused_id}, {scattered_id})"
+    
+    focus_states = [a['focus_state'] for a in activity]
+    logger.info(f"Found focus states: {focus_states}")
+    
+    assert any(a['focus_state'] == 'focused' for a in activity), \
+        f"No focused state found. Found states: {focus_states}"
+    assert any(a['focus_state'] == 'scattered' for a in activity), \
+        f"No scattered state found. Found states: {focus_states}" 

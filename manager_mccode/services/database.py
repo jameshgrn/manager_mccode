@@ -342,12 +342,11 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # Update the query to use relative time from the latest record
+            # Debug logging
+            logger.debug(f"Getting activity for past {hours} hours")
+            
+            # Simplified query that doesn't rely on relative time
             cursor.execute("""
-                WITH latest_time AS (
-                    SELECT MAX(timestamp) as max_time 
-                    FROM activity_snapshots
-                )
                 SELECT 
                     a.timestamp,
                     a.summary,
@@ -359,16 +358,13 @@ class DatabaseManager:
                 FROM activity_snapshots a
                 LEFT JOIN focus_states f ON a.id = f.snapshot_id
                 LEFT JOIN activities act ON a.id = act.snapshot_id
-                WHERE a.timestamp >= (
-                    SELECT datetime(max_time, ?) 
-                    FROM latest_time
-                )
                 ORDER BY a.timestamp DESC
-            """, (f'-{hours} hours',))
+                LIMIT 100
+            """)
             
             results = []
             for row in cursor.fetchall():
-                results.append({
+                result = {
                     'timestamp': row[0],
                     'summary': row[1],
                     'focus_state': row[2],
@@ -376,8 +372,11 @@ class DatabaseManager:
                     'activity_type': row[4],
                     'category': row[5],
                     'attention_level': row[6]
-                })
+                }
+                logger.debug(f"Found activity: {result}")
+                results.append(result)
             
+            logger.debug(f"Retrieved {len(results)} activities")
             return results
                 
         except Exception as e:
@@ -403,6 +402,10 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
+            # Debug logging
+            logger.debug(f"Storing summary with timestamp {summary.timestamp}")
+            logger.debug(f"Context: {summary.context}")
+            
             # Insert main snapshot
             cursor.execute("""
                 INSERT INTO activity_snapshots 
@@ -416,9 +419,11 @@ class DatabaseManager:
             ))
             
             snapshot_id = cursor.fetchone()[0]
+            logger.debug(f"Created snapshot with ID: {snapshot_id}")
             
             # Store focus state
             if summary.context and summary.context.attention_state:
+                logger.debug(f"Storing focus state: {summary.context.attention_state}")
                 cursor.execute("""
                     INSERT INTO focus_states 
                     (snapshot_id, state_type, confidence)
