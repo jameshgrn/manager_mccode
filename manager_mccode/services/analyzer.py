@@ -75,17 +75,21 @@ class GeminiAnalyzer:
                 if not summary_part or not activities:
                     raise ValueError("Missing summary or activities in JSON response")
                 
+                return ScreenSummary(
+                    timestamp=datetime.now(),
+                    summary=summary_part,
+                    activities=activities
+                )
+                
             except json.JSONDecodeError as e:
                 print(f"Error parsing JSON response: {str(e)}")
                 print(f"Raw response: {response_text}")
                 summary_part = response_text[:200] + "..."
-                activities = ["Unknown"]
-            
-            return ScreenSummary(
-                timestamp=datetime.now(),
-                summary=summary_part,
-                key_activities=activities
-            )
+                return ScreenSummary(
+                    timestamp=datetime.now(),
+                    summary=summary_part,
+                    activities=["Unknown"]
+                )
             
         except Exception as e:
             print(f"Error analyzing image: {str(e)}")
@@ -95,7 +99,7 @@ class GeminiAnalyzer:
             return ScreenSummary(
                 timestamp=datetime.now(),
                 summary=f"Error analyzing screenshot: {str(e)}",
-                key_activities=["Error"]
+                activities=["Error"]
             )
         finally:
             # Always clean up the image file
