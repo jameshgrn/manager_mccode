@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manager McCode Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Activity Dashboard</h1>
+            <div class="date-selector">
+                <input type="date" id="dateSelect" value="{{ date }}">
+            </div>
+        </header>
+
+        <main>
+            <section class="metrics-overview">
+                <div class="metric-card">
+                    <h3>Focus Score</h3>
+                    <div class="metric-value" id="focusScore">
+                        {{ "%.1f"|format(metrics.summary.focus_score|default(0)) }}
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <h3>Active Hours</h3>
+                    <div class="metric-value" id="activeHours">
+                        {{ "%.1f"|format(metrics.summary.active_hours|default(0)) }}
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <h3>Context Switches</h3>
+                    <div class="metric-value" id="contextSwitches">
+                        {{ metrics.summary.context_switches|default(0) }}
+                    </div>
+                </div>
+            </section>
+
+            <section class="charts">
+                <div class="chart-container">
+                    <canvas id="hourlyActivityChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="focusDistributionChart"></canvas>
+                </div>
+            </section>
+
+            <section class="activity-breakdown">
+                <h2>Activity Breakdown</h2>
+                <div class="activity-list" id="activityList">
+                    {% for activity in metrics.activities.categories %}
+                    <div class="activity-item">
+                        <span class="activity-name">{{ activity }}</span>
+                        <span class="activity-duration">{{ metrics.activities.categories[activity] }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
+</body>
+</html> 
