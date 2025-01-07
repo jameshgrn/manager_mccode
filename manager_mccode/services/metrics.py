@@ -1,6 +1,6 @@
 """Collect and analyze performance metrics"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Dict, List
 from manager_mccode.services.database import DatabaseManager
 
@@ -12,20 +12,22 @@ class MetricsCollector:
     def __init__(self, db: DatabaseManager):
         self.db = db
 
-    def get_daily_metrics(self, date: datetime = None) -> Dict:
+    def get_daily_metrics(self, date: datetime) -> Dict:
         """Get metrics for a specific day"""
-        if not date:
-            date = datetime.now()
+        try:
+            # Convert date to datetime range
+            start = datetime.combine(date.date(), time.min)  # Start of day
+            end = datetime.combine(date.date(), time.max)    # End of day
             
-        start = date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
-        
-        return {
-            "summary": self._get_daily_summary(start, end),
-            "activities": self._get_activity_breakdown(start, end),
-            "focus_states": self._get_focus_distribution(start, end),
-            "hourly_patterns": self._get_hourly_patterns(start, end)
-        }
+            return {
+                "summary": self._get_daily_summary(start, end),
+                "activities": self._get_activity_breakdown(start, end),
+                "focus_states": self._get_focus_distribution(start, end),
+                "hourly_patterns": self._get_hourly_patterns(start, end)
+            }
+        except Exception as e:
+            logger.error(f"Error getting daily metrics: {e}")
+            return {}
 
     def export_timeframe(self, start: datetime, end: datetime) -> Dict:
         """Export all metrics for a given timeframe"""
@@ -39,20 +41,36 @@ class MetricsCollector:
         }
 
     def _get_daily_summary(self, start: datetime, end: datetime) -> Dict:
-        """Get summary metrics for the day"""
+        """Get summary metrics for a day"""
         try:
             snapshots = self.db.get_snapshots_between(start, end)
-            total_snapshots = len(snapshots)
-            
-            if not total_snapshots:
-                return {}
+            if not snapshots:
+                return {
+                    "focus_score": 0.0,
+                    "active_hours": 0.0,
+                    "context_switches": 0
+                }
                 
+            # Calculate metrics
+            focus_scores = [s.get("focus_score", 0) for s in snapshots]
+            avg_focus_score = sum(focus_scores) / len(focus_scores) if focus_scores else 0
+            
+            active_hours = self._calculate_active_hours(snapshots)
+            
+            # Count context switches (approximation based on activity changes)
+            context_switches = 0
+            for i in range(len(snapshots) - 1):
+                prev_acts = set(snapshots[i].get("activities", []))
+                next_acts = set(snapshots[i + 1].get("activities", []))
+                if prev_acts != next_acts:
+                    context_switches += 1
+                    
             return {
-                "total_snapshots": total_snapshots,
-                "date": start.date().isoformat(),
-                "active_hours": self._calculate_active_hours(snapshots),
-                "primary_tasks": self._get_primary_tasks(snapshots)
+                "focus_score": round(avg_focus_score, 1),
+                "active_hours": round(active_hours, 1),
+                "context_switches": context_switches
             }
+            
         except Exception as e:
             logger.error(f"Error getting daily summary: {e}")
             return {}
@@ -102,14 +120,20 @@ class MetricsCollector:
         try:
             snapshots = self.db.get_snapshots_between(start, end)
             
-            hourly = {i: {
+            hourly = {str(i): {
                 "activities": 0,
                 "focus_score": 0,
                 "snapshots": 0
             } for i in range(24)}
             
             for snapshot in snapshots:
-                hour = snapshot["timestamp"].hour
+                # Convert timestamp string to datetime if needed
+                if isinstance(snapshot["timestamp"], str):
+                    timestamp = datetime.fromisoformat(snapshot["timestamp"])
+                else:
+                    timestamp = snapshot["timestamp"]
+                    
+                hour = str(timestamp.hour)
                 hourly[hour]["snapshots"] += 1
                 hourly[hour]["focus_score"] += snapshot.get("focus_score", 0)
                 hourly[hour]["activities"] += len(snapshot.get("activities", []))

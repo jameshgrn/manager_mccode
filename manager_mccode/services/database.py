@@ -622,7 +622,7 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT 
                     s.id,
-                    s.timestamp,
+                    datetime(s.timestamp) as timestamp,  -- Ensure proper datetime format
                     s.summary,
                     s.focus_score,
                     GROUP_CONCAT(a.name) as activities,
@@ -639,6 +639,9 @@ class DatabaseManager:
             
             for row in cursor.fetchall():
                 snapshot = dict(zip(columns, row))
+                # Convert timestamp string to datetime
+                snapshot['timestamp'] = datetime.fromisoformat(snapshot['timestamp'].replace(' ', 'T'))
+                
                 # Convert activities and categories strings to lists
                 if snapshot.get('activities'):
                     snapshot['activities'] = snapshot['activities'].split(',')
