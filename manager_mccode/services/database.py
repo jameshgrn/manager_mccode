@@ -91,6 +91,29 @@ class DatabaseManager:
         self.conn = None
         self.initialize()
 
+    def get_connection(self):
+        """Get a database connection, creating it if needed"""
+        if self.conn is None:
+            # Create new connection if none exists
+            if self.db_path != ":memory:":
+                db_path = Path(self.db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                db_path_str = str(db_path)
+            else:
+                db_path_str = self.db_path
+
+            self.conn = sqlite3.connect(db_path_str)
+            # Enable foreign key support
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            # Enable WAL mode for better concurrency
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            # Set synchronous mode for better performance while maintaining safety
+            self.conn.execute("PRAGMA synchronous = NORMAL")
+            # Enable memory-mapped I/O for better performance
+            self.conn.execute("PRAGMA mmap_size = 30000000000")
+
+        return self.conn
+
     def _optimize_database(self) -> None:
         """Run database optimizations"""
         try:
@@ -316,38 +339,38 @@ class DatabaseManager:
     def get_recent_activity(self, hours: int = 1) -> List[Dict]:
         """Get recent activity with focus states"""
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        a.timestamp,
-                        a.summary,
-                        f.state_type as focus_state,
-                        f.confidence as focus_confidence,
-                        act.activity_type,
-                        act.category,
-                        act.attention_level
-                    FROM activity_snapshots a
-                    LEFT JOIN focus_states f ON a.id = f.snapshot_id
-                    LEFT JOIN activities act ON a.id = act.snapshot_id
-                    WHERE a.timestamp > datetime('now', ?) 
-                    ORDER BY a.timestamp DESC
-                """, (f'-{hours} hours',))
-                
-                results = []
-                for row in cursor.fetchall():
-                    results.append({
-                        'timestamp': row[0],
-                        'summary': row[1],
-                        'focus_state': row[2],
-                        'focus_confidence': row[3],
-                        'activity_type': row[4],
-                        'category': row[5],
-                        'attention_level': row[6]
-                    })
-                
-                return results
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    a.timestamp,
+                    a.summary,
+                    f.state_type as focus_state,
+                    f.confidence as focus_confidence,
+                    act.activity_type,
+                    act.category,
+                    act.attention_level
+                FROM activity_snapshots a
+                LEFT JOIN focus_states f ON a.id = f.snapshot_id
+                LEFT JOIN activities act ON a.id = act.snapshot_id
+                WHERE a.timestamp > datetime('now', ?) 
+                ORDER BY a.timestamp DESC
+            """, (f'-{hours} hours',))
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'timestamp': row[0],
+                    'summary': row[1],
+                    'focus_state': row[2],
+                    'focus_confidence': row[3],
+                    'activity_type': row[4],
+                    'category': row[5],
+                    'attention_level': row[6]
+                })
+            
+            return results
                 
         except Exception as e:
             logger.error(f"Failed to get recent activity: {e}")
@@ -366,53 +389,53 @@ class DatabaseManager:
     def store_summary(self, summary: ScreenSummary) -> int:
         """Store a screen summary in the database"""
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Insert main snapshot
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Insert main snapshot
+            cursor.execute("""
+                INSERT INTO activity_snapshots 
+                (timestamp, summary, focus_score)
+                VALUES (?, ?, ?)
+                RETURNING id
+            """, (
+                summary.timestamp,
+                summary.summary,
+                summary.context.confidence if summary.context else 0.0
+            ))
+            
+            snapshot_id = cursor.fetchone()[0]
+            
+            # Store focus state
+            if summary.context and summary.context.attention_state:
                 cursor.execute("""
-                    INSERT INTO activity_snapshots 
-                    (timestamp, summary, focus_score)
+                    INSERT INTO focus_states 
+                    (snapshot_id, state_type, confidence)
                     VALUES (?, ?, ?)
-                    RETURNING id
                 """, (
-                    summary.timestamp,
-                    summary.summary,
-                    summary.context.confidence if summary.context else 0.0
+                    snapshot_id,
+                    summary.context.attention_state,
+                    summary.context.confidence
                 ))
-                
-                snapshot_id = cursor.fetchone()[0]
-                
-                # Store focus state
-                if summary.context and summary.context.attention_state:
-                    cursor.execute("""
-                        INSERT INTO focus_states 
-                        (snapshot_id, state_type, confidence)
-                        VALUES (?, ?, ?)
-                    """, (
-                        snapshot_id,
-                        summary.context.attention_state,
-                        summary.context.confidence
-                    ))
-                
-                # Store activities
-                for activity in summary.activities:
-                    cursor.execute("""
-                        INSERT INTO activities 
-                        (snapshot_id, activity_type, category, attention_level,
-                         context_switches, workspace_organization)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
-                        snapshot_id,
-                        activity.name,
-                        activity.category,
-                        activity.focus_indicators.attention_level,
-                        activity.focus_indicators.context_switches,
-                        activity.focus_indicators.workspace_organization
-                    ))
-                
-                conn.commit()
-                return snapshot_id
+            
+            # Store activities
+            for activity in summary.activities:
+                cursor.execute("""
+                    INSERT INTO activities 
+                    (snapshot_id, activity_type, category, attention_level,
+                     context_switches, workspace_organization)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    snapshot_id,
+                    activity.name,
+                    activity.category,
+                    activity.focus_indicators.attention_level,
+                    activity.focus_indicators.context_switches,
+                    activity.focus_indicators.workspace_organization
+                ))
+            
+            conn.commit()
+            return snapshot_id
                 
         except Exception as e:
             logger.error(f"Failed to store summary: {e}")
