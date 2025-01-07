@@ -262,32 +262,50 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             
-            # Create screen summaries table
+            # Create activity snapshots table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS screen_summaries (
+                CREATE TABLE IF NOT EXISTS activity_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
                     summary TEXT NOT NULL,
-                    focus_state TEXT,
-                    focus_confidence REAL,
-                    activities TEXT,  -- JSON array
-                    context TEXT,    -- JSON object
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    window_title TEXT,
+                    active_app TEXT,
+                    focus_score FLOAT,
+                    batch_id INTEGER
                 )
             """)
             
-            # Create task segments table
+            # Create focus states table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS task_segments (
+                CREATE TABLE IF NOT EXISTS focus_states (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    start_time TEXT NOT NULL,
-                    end_time TEXT,
-                    task_name TEXT NOT NULL,
-                    category TEXT,
-                    context TEXT,  -- JSON object
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    snapshot_id INTEGER NOT NULL,
+                    state_type VARCHAR(50) NOT NULL,  -- focused, transitioning, scattered
+                    confidence FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
                 )
             """)
+
+            # Create activities table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS activities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    purpose TEXT,
+                    attention_level FLOAT NOT NULL,
+                    context_switches TEXT NOT NULL,  -- low, medium, high
+                    workspace_organization TEXT NOT NULL,  -- organized, mixed, scattered
+                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Create indexes for performance
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id)")
             
             self.conn.commit()
             logger.info("Database initialization complete")
