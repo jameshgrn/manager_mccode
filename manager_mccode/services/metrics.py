@@ -215,3 +215,18 @@ class MetricsCollector:
         except Exception as e:
             logger.error(f"Error getting aggregate metrics: {e}")
             return {} 
+
+    def _calculate_focus_score(self, focus_states: Dict[str, int]) -> float:
+        """Calculate overall focus score from state distribution"""
+        total = sum(focus_states.values())
+        if total == 0:
+            return 0.0
+        
+        # Weight: focused = 100, neutral = 50, scattered = 0
+        weighted_sum = (
+            focus_states.get("focused", 0) * 100 +
+            focus_states.get("neutral", 0) * 50 +
+            focus_states.get("scattered", 0) * 0
+        )
+        
+        return round(weighted_sum / total, 1) 
