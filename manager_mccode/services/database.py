@@ -2,10 +2,11 @@ from datetime import datetime, timedelta
 import sqlite3
 from pathlib import Path
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 import sys
 import json
 from manager_mccode.models.screen_summary import ScreenSummary
+from manager_mccode.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -95,31 +96,217 @@ MIGRATIONS = [
     """
 ]
 
+class DatabaseError(Exception):
+    """Base exception for database-related errors"""
+    pass
+
 class DatabaseManager:
-    def __init__(self, db_path: str = "manager_mccode.db"):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path=None):
+        """Initialize database manager
+        
+        Args:
+            db_path: Path to database file, or ":memory:" for in-memory database
+        """
+        self.db_path = db_path or settings.DEFAULT_DB_PATH
         logger.info(f"Initialized DatabaseManager with db_path: {self.db_path}")
         self.conn = None
         self.initialize()
+
+    def _optimize_database(self) -> None:
+        """Run database optimizations
+        
+        This includes:
+        - Analyzing tables for better query planning
+        - Running VACUUM to reclaim space
+        - Updating statistics
+        """
+        try:
+            logger.info("Running database optimizations...")
+            self.conn.execute("PRAGMA optimize")
+            self.conn.execute("ANALYZE")
+            self.conn.execute("VACUUM")
+            logger.info("Database optimizations complete")
+        except Exception as e:
+            logger.error(f"Failed to optimize database: {e}")
+            raise DatabaseError(f"Optimization failed: {e}")
+
+    def cleanup_old_data(self, days: Optional[int] = None) -> Tuple[int, int]:
+        """Remove data older than specified days
+        
+        Args:
+            days: Days of data to retain, defaults to settings.DB_RETENTION_DAYS
+            
+        Returns:
+            Tuple[int, int]: (records deleted, space reclaimed in bytes)
+            
+        Raises:
+            DatabaseError: If cleanup fails
+        """
+        retention_days = days or settings.DB_RETENTION_DAYS
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        
+        try:
+            # Start transaction
+            self.conn.execute("BEGIN TRANSACTION")
+            
+            # Get initial database size
+            initial_size = Path(self.db_path).stat().st_size
+            
+            # Delete old records from all tables
+            cursor = self.conn.execute("""
+                DELETE FROM activity_snapshots 
+                WHERE timestamp < ?
+            """, [cutoff])
+            deleted_count = cursor.rowcount
+            
+            # Optimize after large deletions
+            self._optimize_database()
+            
+            # Calculate space reclaimed
+            final_size = Path(self.db_path).stat().st_size
+            space_reclaimed = initial_size - final_size
+            
+            self.conn.commit()
+            logger.info(
+                f"Cleaned up {deleted_count} records older than {retention_days} days. "
+                f"Reclaimed {space_reclaimed/1024/1024:.1f}MB"
+            )
+            
+            return deleted_count, space_reclaimed
+            
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Failed to clean up old data: {e}")
+            raise DatabaseError(f"Data cleanup failed: {e}")
+
+    def get_database_stats(self) -> Dict:
+        """Get database statistics and health metrics
+        
+        Returns:
+            Dict containing:
+            - Table row counts
+            - Database size
+            - Index sizes
+            - Last optimization time
+            - Data retention metrics
+        """
+        try:
+            stats = {}
+            
+            # Get table statistics
+            cursor = self.conn.execute("""
+                SELECT 
+                    name,
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count,
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name=m.name) as trigger_count
+                FROM sqlite_master m
+                WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            """)
+            
+            tables = {}
+            for table_name, index_count, trigger_count in cursor.fetchall():
+                # Get row count for table
+                count_cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = count_cursor.fetchone()[0]
+                
+                tables[table_name] = {
+                    'row_count': row_count,
+                    'index_count': index_count,
+                    'trigger_count': trigger_count
+                }
+            
+            stats['tables'] = tables
+            
+            # Get database file size
+            stats['database_size_mb'] = Path(self.db_path).stat().st_size / 1024 / 1024
+            
+            # Get oldest and newest records
+            cursor = self.conn.execute("""
+                SELECT 
+                    MIN(timestamp) as oldest,
+                    MAX(timestamp) as newest,
+                    COUNT(*) as total
+                FROM activity_snapshots
+            """)
+            time_stats = cursor.fetchone()
+            stats['time_range'] = {
+                'oldest': time_stats[0],
+                'newest': time_stats[1],
+                'total_records': time_stats[2]
+            }
+            
+            # Get index statistics
+            cursor = self.conn.execute("""
+                SELECT name, sql 
+                FROM sqlite_master 
+                WHERE type='index' AND sql IS NOT NULL
+            """)
+            stats['indexes'] = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to get database stats: {e}")
+            raise DatabaseError(f"Stats collection failed: {e}")
+
+    def verify_database_integrity(self) -> bool:
+        """Run integrity check on the database
+        
+        Returns:
+            bool: True if database is healthy
+            
+        Raises:
+            DatabaseError: If integrity check fails
+        """
+        try:
+            cursor = self.conn.execute("PRAGMA integrity_check")
+            result = cursor.fetchone()[0]
+            
+            if result != "ok":
+                logger.error(f"Database integrity check failed: {result}")
+                return False
+                
+            cursor = self.conn.execute("PRAGMA foreign_key_check")
+            if cursor.fetchone() is not None:
+                logger.error("Foreign key violations found")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to verify database integrity: {e}")
+            raise DatabaseError(f"Integrity check failed: {e}")
 
     def initialize(self):
         """Initialize the database and run migrations"""
         try:
             logger.info(f"Connecting to database at path: {self.db_path}")
-            db_path_str = str(self.db_path)
             
-            # Try to create parent directory if it doesn't exist
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            
+            # Only create directories if not using in-memory database
+            if self.db_path != ":memory:":
+                db_path = Path(self.db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                db_path_str = str(db_path)
+            else:
+                db_path_str = self.db_path
+
             self.conn = sqlite3.connect(db_path_str)
             # Enable foreign key support
             self.conn.execute("PRAGMA foreign_keys = ON")
+            # Enable WAL mode for better concurrency
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            # Set synchronous mode for better performance while maintaining safety
+            self.conn.execute("PRAGMA synchronous = NORMAL")
+            # Enable memory-mapped I/O for better performance
+            self.conn.execute("PRAGMA mmap_size = 30000000000")
+            
             logger.info("Successfully connected to SQLite.")
             
             # Run migrations in a transaction
             self.conn.execute("BEGIN TRANSACTION")
             try:
                 self._run_migrations()
+                self._optimize_database()
                 self.conn.commit()
                 logger.info("Database initialization complete")
             except Exception as e:
@@ -128,7 +315,7 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"Database initialization failed: {e}", exc_info=True)
-            raise
+            raise DatabaseError(f"Initialization failed: {e}")
 
     def _run_migrations(self):
         """Run any pending database migrations"""
@@ -217,8 +404,12 @@ class DatabaseManager:
     def close(self):
         """Close database connection"""
         if self.conn:
-            self.conn.close()
-            logger.info("Database connection closed.") 
+            try:
+                self._optimize_database()
+                self.conn.close()
+                logger.info("Database connection closed.")
+            except Exception as e:
+                logger.error(f"Error closing database: {e}")
 
     def store_summary(self, summary: ScreenSummary):
         """Store a summary in the database and return its ID

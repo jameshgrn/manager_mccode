@@ -1,27 +1,115 @@
-import os
-from dotenv import load_dotenv
+from pathlib import Path
+from typing import Optional
+from pydantic_settings import BaseSettings
+from pydantic import Field, validator
 
-# Load environment variables
-load_dotenv()
+class Settings(BaseSettings):
+    # Paths and directories
+    WORKSPACE_ROOT: Path = Field(
+        default=Path(__file__).parent.parent.parent,
+        description="Root directory of the workspace"
+    )
+    TEMP_SCREENSHOTS_DIR: Path = Field(
+        default=Path("temp_screenshots"),
+        description="Directory for temporary screenshot storage"
+    )
+    DEFAULT_DB_PATH: Path = Field(
+        default=Path("manager_mccode.db"),
+        description="Default SQLite database path"
+    )
+    
+    # Gemini API settings
+    GEMINI_API_KEY: str = Field(
+        default=...,  # Required field
+        description="API key for Gemini Vision API"
+    )
+    GEMINI_MODEL_NAME: str = Field(
+        default='gemini-1.5-flash-8b',
+        description="Gemini model to use for analysis"
+    )
+    
+    # Screenshot and batch settings
+    SCREENSHOT_INTERVAL_SECONDS: int = Field(
+        default=10,
+        ge=5,  # Minimum 5 seconds
+        le=300,  # Maximum 5 minutes
+        description="Interval between screenshots"
+    )
+    DEFAULT_BATCH_SIZE: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+        description="Number of screenshots to process in one batch"
+    )
+    DEFAULT_BATCH_INTERVAL_SECONDS: int = Field(
+        default=120,
+        ge=30,
+        le=600,
+        description="Maximum time to wait before processing a batch"
+    )
+    
+    # Image processing settings
+    MAX_IMAGE_SIZE_MB: float = Field(
+        default=4.0,
+        ge=1.0,
+        le=10.0,
+        description="Maximum size of compressed screenshots in MB"
+    )
+    IMAGE_COMPRESSION_QUALITY: int = Field(
+        default=85,
+        ge=30,
+        le=100,
+        description="JPEG compression quality (30-100)"
+    )
+    DEFAULT_IMAGE_MAX_AGE_MINUTES: int = Field(
+        default=60,
+        ge=5,
+        le=1440,  # 24 hours
+        description="How long to keep screenshots before cleanup"
+    )
+    
+    # Error handling settings
+    MAX_ERRORS: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of errors before shutdown"
+    )
+    ERROR_RESET_INTERVAL: int = Field(
+        default=300,
+        ge=60,
+        le=3600,
+        description="Seconds after which error count resets"
+    )
+    
+    # Database settings
+    DB_RETENTION_DAYS: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Days to retain data before cleanup"
+    )
+    
+    # Multi-monitor support
+    CAPTURE_ALL_MONITORS: bool = Field(
+        default=True,
+        description="Whether to capture all monitors or just primary"
+    )
+    
+    @validator("TEMP_SCREENSHOTS_DIR", "DEFAULT_DB_PATH", pre=True)
+    def create_directories(cls, v):
+        path = Path(v)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    
+    @validator("GEMINI_API_KEY")
+    def validate_api_key(cls, v):
+        if not v:
+            raise ValueError("GEMINI_API_KEY must be set in environment variables")
+        return v
 
-# Gemini settings
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME = 'gemini-1.5-flash-8b'
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
-# Database settings
-DEFAULT_DB_PATH = "screen_summaries.db"
-
-# Image settings
-TEMP_SCREENSHOTS_DIR = "temp_screenshots"
-
-# Batch processing settings
-DEFAULT_BATCH_SIZE = 12
-DEFAULT_BATCH_INTERVAL_SECONDS = 120
-SCREENSHOT_INTERVAL_SECONDS = 10
-
-# Cleanup settings
-DEFAULT_IMAGE_MAX_AGE_MINUTES = 60 
-
-# Error handling settings
-MAX_ERRORS = 5
-ERROR_RESET_INTERVAL = 300  # 5 minutes 
+settings = Settings() 

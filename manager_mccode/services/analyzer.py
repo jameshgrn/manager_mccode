@@ -2,13 +2,16 @@ import json
 import google.generativeai as genai
 from datetime import datetime
 from manager_mccode.models.screen_summary import ScreenSummary
-from manager_mccode.config.settings import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from manager_mccode.config.settings import settings
 import os
 
 # Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=settings.GEMINI_API_KEY)
 
 class GeminiAnalyzer:
+    def __init__(self, model_name=settings.GEMINI_MODEL_NAME):
+        self.model = genai.GenerativeModel(model_name)
+
     @staticmethod
     async def analyze_image(image_path: str) -> ScreenSummary:
         """Analyze screenshot using Gemini Vision API"""
@@ -43,7 +46,7 @@ class GeminiAnalyzer:
             
             # Create the model with configuration
             model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL_NAME,
+                model_name=settings.GEMINI_MODEL_NAME,
                 generation_config=generation_config
             )
             

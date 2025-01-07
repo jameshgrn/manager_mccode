@@ -7,9 +7,14 @@ from manager_mccode.config.logging_config import setup_logging
 from manager_mccode.services.database import DatabaseManager
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 from datetime import datetime, timedelta
 import logging
 import asyncio
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 @click.group()
 def cli():
@@ -116,8 +121,8 @@ def inspect():
     console = Console()
     db = DatabaseManager()
     
-    # Get last 24 hours of summaries
-    summaries = db.get_recent_fifteen_min_summaries(hours=24)
+    # Get last 10 summaries
+    summaries = db.get_recent_summaries(limit=10)
     
     if not summaries:
         console.print("[yellow]No summaries found in the database[/yellow]")
@@ -131,19 +136,20 @@ def inspect():
     table.add_column("Summary", style="white", width=60)
     
     for summary in summaries:
-        time_str = summary['bucket'].strftime('%H:%M')
-        activities = ", ".join(set([act for acts in summary['all_activities'] for act in acts]))
-        if len(activities) > 40:
-            activities = activities[:37] + "..."
+        time_str = summary['timestamp']
+        activities = summary.get('activities', [])
+        activities_str = ", ".join(act.get('name', 'Unknown') for act in activities)
+        if len(activities_str) > 40:
+            activities_str = activities_str[:37] + "..."
             
         table.add_row(
             time_str,
-            activities,
-            str(summary['snapshot_count']),
-            summary['combined_summaries'][:57] + "..." if len(summary['combined_summaries']) > 60 else summary['combined_summaries']
+            activities_str,
+            "1",  # Each summary is one snapshot
+            summary['summary'][:57] + "..." if len(summary['summary']) > 60 else summary['summary']
         )
     
-    console.print("\n[bold cyan]Database Summary - Last 24 Hours[/bold cyan]")
+    console.print("\n[bold cyan]Recent Database Summaries[/bold cyan]")
     console.print(table)
     
     # Show statistics
@@ -208,6 +214,110 @@ def debug():
         asyncio.run(main())
     except Exception as e:
         logging.error(f"Debug mode failed: {e}", exc_info=True)
+        sys.exit(1)
+
+@cli.group()
+def db():
+    """Database management commands"""
+    pass
+
+@db.command()
+@click.option('--days', type=int, help='Days of data to retain')
+def cleanup(days: int):
+    """Clean up old data from the database"""
+    try:
+        db = DatabaseManager()
+        deleted, reclaimed = db.cleanup_old_data(days)
+        
+        console = Console()
+        console.print(Panel(
+            f"[green]Cleaned up {deleted} records[/green]\n"
+            f"[blue]Reclaimed {reclaimed/1024/1024:.1f}MB of space[/blue]",
+            title="Database Cleanup"
+        ))
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        sys.exit(1)
+
+@db.command()
+def stats():
+    """Show database statistics"""
+    try:
+        db = DatabaseManager()
+        stats = db.get_database_stats()
+        
+        console = Console()
+        
+        # Table statistics
+        table = Table(title="Database Tables")
+        table.add_column("Table", style="cyan")
+        table.add_column("Rows", justify="right", style="green")
+        table.add_column("Indexes", justify="right", style="yellow")
+        table.add_column("Triggers", justify="right", style="magenta")
+        
+        for table_name, info in stats['tables'].items():
+            table.add_row(
+                table_name,
+                str(info['row_count']),
+                str(info['index_count']),
+                str(info['trigger_count'])
+            )
+        
+        console.print(table)
+        
+        # Time range info
+        time_range = stats['time_range']
+        if time_range['oldest'] and time_range['newest']:
+            oldest = datetime.fromisoformat(time_range['oldest'])
+            newest = datetime.fromisoformat(time_range['newest'])
+            date_range = newest - oldest
+            
+            time_panel = Panel(
+                f"[cyan]Date Range:[/cyan] {date_range.days} days\n"
+                f"[green]Oldest Record:[/green] {oldest.strftime('%Y-%m-%d %H:%M')}\n"
+                f"[green]Newest Record:[/green] {newest.strftime('%Y-%m-%d %H:%M')}\n"
+                f"[yellow]Total Records:[/yellow] {time_range['total_records']:,}",
+                title="Data Overview"
+            )
+            console.print(time_panel)
+        
+        # Database size
+        size_text = Text()
+        size_text.append("\nDatabase Size: ", style="bold")
+        size_text.append(f"{stats['database_size_mb']:.1f}MB", style="green")
+        console.print(size_text)
+        
+    except Exception as e:
+        logger.error(f"Failed to get database stats: {e}")
+        sys.exit(1)
+
+@db.command()
+def verify():
+    """Verify database integrity"""
+    try:
+        db = DatabaseManager()
+        is_healthy = db.verify_database_integrity()
+        
+        console = Console()
+        if is_healthy:
+            console.print("[green]Database integrity check passed[/green]")
+        else:
+            console.print("[red]Database integrity check failed![/red]")
+            sys.exit(1)
+    except Exception as e:
+        logger.error(f"Integrity check failed: {e}")
+        sys.exit(1)
+
+@db.command()
+def optimize():
+    """Optimize database performance"""
+    try:
+        db = DatabaseManager()
+        db._optimize_database()
+        console = Console()
+        console.print("[green]Database optimization complete[/green]")
+    except Exception as e:
+        logger.error(f"Optimization failed: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':

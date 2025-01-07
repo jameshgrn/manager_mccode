@@ -1,44 +1,76 @@
 import pytest
 from datetime import datetime, timedelta
-from manager_mccode.services.database import DatabaseManager
+from manager_mccode.services.database import DatabaseManager, DatabaseError
+from manager_mccode.models.screen_summary import ScreenSummary
 
-@pytest.fixture
-def db():
-    """Provide a test database instance"""
-    db = DatabaseManager(":memory:")  # Use in-memory database for testing
-    yield db
-    db.close()
+def test_store_and_retrieve_summary(db, sample_summary):
+    """Test storing and retrieving a complete summary"""
+    # Store the summary
+    summary_id = db.store_summary(sample_summary)
+    assert summary_id is not None
+    
+    # Retrieve recent summaries
+    summaries = db.get_recent_summaries(limit=1)
+    assert len(summaries) == 1
+    
+    retrieved = summaries[0]
+    assert retrieved['summary'] == sample_summary.summary
+    assert retrieved['focus_state'] == sample_summary.context.attention_state
+    assert retrieved['focus_confidence'] == sample_summary.context.confidence
 
-def test_database_initialization(db):
-    """Test database initialization and migrations"""
-    # Check if tables exist
-    tables = db.conn.execute("""
-        SELECT name FROM sqlite_master 
-        WHERE type='table'
-    """).fetchall()
-    table_names = {t[0] for t in tables}
+def test_cleanup_old_data(db, sample_summary):
+    """Test cleaning up old data"""
+    # Store some old and new summaries
+    old_summary = sample_summary.copy()
+    old_summary.timestamp = datetime.now() - timedelta(days=40)
+    db.store_summary(old_summary)
     
-    assert "activity_snapshots" in table_names
-    assert "focus_states" in table_names
-    assert "task_segments" in table_names
+    new_summary = sample_summary.copy()
+    db.store_summary(new_summary)
+    
+    # Clean up old data
+    deleted, space = db.cleanup_old_data(days=30)
+    assert deleted >= 1
+    
+    # Check that only old data was removed
+    summaries = db.get_recent_summaries()
+    timestamps = [datetime.fromisoformat(s['timestamp']) for s in summaries]
+    assert all(t > datetime.now() - timedelta(days=30) for t in timestamps)
 
-def test_store_snapshot(db):
-    """Test storing and retrieving snapshots"""
-    test_data = {
-        "timestamp": datetime.now(),
-        "summary": "Test activity",
-        "window_title": "Test Window",
-        "active_app": "TestApp",
-        "focus_score": 0.8
-    }
+def test_database_stats(db, sample_summary):
+    """Test getting database statistics"""
+    # Store some test data
+    for _ in range(3):
+        db.store_summary(sample_summary)
     
-    db.store_snapshot(test_data)
+    stats = db.get_database_stats()
+    assert 'tables' in stats
+    assert 'database_size_mb' in stats
+    assert 'time_range' in stats
+    assert stats['time_range']['total_records'] == 3
+
+def test_database_integrity(db):
+    """Test database integrity check"""
+    assert db.verify_database_integrity() is True
+
+def test_error_handling(db):
+    """Test database error handling"""
+    with pytest.raises(DatabaseError):
+        # Force an error by passing invalid data
+        db.store_summary(None)
+
+def test_focus_metrics(db, sample_summary):
+    """Test focus metrics calculation"""
+    # Store summaries with different focus states
+    focused = sample_summary.copy()
+    focused.context.attention_state = "focused"
+    scattered = sample_summary.copy()
+    scattered.context.attention_state = "scattered"
     
-    result = db.conn.execute("""
-        SELECT * FROM activity_snapshots
-        ORDER BY timestamp DESC LIMIT 1
-    """).fetchone()
+    db.store_summary(focused)
+    db.store_summary(scattered)
     
-    assert result is not None
-    assert result[2] == "Test activity"  # summary field
-    assert result[4] == "TestApp"  # active_app field 
+    # Get recent activity
+    activity = db.get_recent_activity(hours=1)
+    assert len(activity) > 0
+    assert any('focused' in str(a) for a in activity) 
