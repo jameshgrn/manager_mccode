@@ -1,9 +1,14 @@
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
+from pydantic import Field, field_validator, ConfigDict
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
+
     # Paths and directories
     WORKSPACE_ROOT: Path = Field(
         default=Path(__file__).parent.parent.parent,
@@ -96,20 +101,16 @@ class Settings(BaseSettings):
         description="Whether to capture all monitors or just primary"
     )
     
-    @validator("TEMP_SCREENSHOTS_DIR", "DEFAULT_DB_PATH", pre=True)
-    def create_directories(cls, v):
-        path = Path(v)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+    @field_validator("TEMP_SCREENSHOTS_DIR", "DEFAULT_DB_PATH", mode='before')
+    def validate_paths(cls, v):
+        if isinstance(v, str):
+            return Path(v)
+        return v
     
-    @validator("GEMINI_API_KEY")
+    @field_validator("GEMINI_API_KEY")
     def validate_api_key(cls, v):
         if not v:
-            raise ValueError("GEMINI_API_KEY must be set in environment variables")
+            raise ValueError("GEMINI_API_KEY must be set")
         return v
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 settings = Settings() 
