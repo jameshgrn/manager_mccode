@@ -1,6 +1,7 @@
 import pytest
 from pathlib import Path
 import tempfile
+import json
 from datetime import datetime, timedelta
 from unittest.mock import patch, Mock
 
@@ -39,9 +40,9 @@ async def test_capture_analyze_store_flow(test_env):
         mock_grab.return_value = mock_image
         
         # Capture screenshot
-        screenshot_path = test_env['image_manager'].save_screenshot()
-        # Convert string path to Path object for exists check
-        assert Path(screenshot_path).exists()
+        screenshot_path_str = test_env['image_manager'].save_screenshot()
+        screenshot_path = Path(screenshot_path_str)  # Convert to Path object once
+        assert screenshot_path.exists()
         
         # Mock Gemini API response
         mock_response = {
@@ -68,7 +69,7 @@ async def test_capture_analyze_store_flow(test_env):
             assert stored['summary'] == mock_response['summary']
             
             # Check cleanup
-            assert not screenshot_path.exists()
+            assert not screenshot_path.exists()  # Use Path object here too
 
 @pytest.mark.asyncio
 async def test_metrics_and_recommendations(test_env):
