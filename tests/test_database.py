@@ -62,9 +62,9 @@ def test_error_handling(db):
 def test_focus_metrics(db, sample_summary):
     """Test focus metrics calculation"""
     # Store summaries with different focus states
-    focused = sample_summary.copy()
+    focused = sample_summary.model_copy()
     focused.context.attention_state = "focused"
-    scattered = sample_summary.copy()
+    scattered = sample_summary.model_copy()
     scattered.context.attention_state = "scattered"
     
     db.store_summary(focused)

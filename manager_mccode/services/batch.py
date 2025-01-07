@@ -63,14 +63,7 @@ class BatchProcessor:
         )
 
     async def process_batch(self) -> List[ScreenSummary]:
-        """Process a batch of screenshots
-        
-        Returns:
-            List[ScreenSummary]: Processed summaries
-            
-        Raises:
-            BatchProcessingError: If batch processing fails
-        """
+        """Process a batch of screenshots"""
         if not self.pending_screenshots:
             return []
 
@@ -79,33 +72,27 @@ class BatchProcessor:
             timestamps = sorted(self.pending_screenshots.keys())
             batch_timestamps = timestamps[:self.batch_size]
             
-            # Process each set of screenshots
+            # Process each screenshot
             summaries = []
             for timestamp in batch_timestamps:
-                screenshot_paths = self.pending_screenshots[timestamp]
+                screenshot_path = self.pending_screenshots[timestamp]
                 try:
-                    # Load all images for this timestamp
-                    image_parts = []
-                    for path in screenshot_paths:
-                        try:
-                            with open(path, 'rb') as img_file:
-                                image_parts.append({
-                                    "mime_type": "image/jpeg",
-                                    "data": img_file.read()
-                                })
-                        except Exception as e:
-                            logger.error(f"Failed to read image {path}: {e}")
-                            continue
-
-                    if not image_parts:
-                        logger.error(f"No valid images found for timestamp {timestamp}")
+                    # Load image
+                    try:
+                        with open(screenshot_path, 'rb') as img_file:
+                            image_part = {
+                                "mime_type": "image/jpeg",
+                                "data": img_file.read()
+                            }
+                    except Exception as e:
+                        logger.error(f"Failed to read image {screenshot_path}: {e}")
                         continue
 
                     # Generate analysis with retry logic
                     max_retries = 3
                     for attempt in range(max_retries):
                         try:
-                            response = await self._generate_analysis(image_parts)
+                            response = await self._generate_analysis([image_part])
                             if response and response.text:
                                 result = self._parse_response(response.text)
                                 summary = self._create_summary(result, timestamp)
@@ -120,8 +107,11 @@ class BatchProcessor:
                                 await asyncio.sleep(1)
 
                 finally:
-                    # Clean up the screenshots
-                    self._cleanup_screenshots(screenshot_paths)
+                    # Clean up the screenshot
+                    try:
+                        Path(screenshot_path).unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.error(f"Failed to clean up screenshot {screenshot_path}: {e}")
 
             # Remove processed timestamps
             for timestamp in batch_timestamps:

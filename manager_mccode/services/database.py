@@ -113,18 +113,20 @@ class DatabaseManager:
         self.initialize()
 
     def _optimize_database(self) -> None:
-        """Run database optimizations
-        
-        This includes:
-        - Analyzing tables for better query planning
-        - Running VACUUM to reclaim space
-        - Updating statistics
-        """
+        """Run database optimizations"""
         try:
             logger.info("Running database optimizations...")
-            self.conn.execute("PRAGMA optimize")
-            self.conn.execute("ANALYZE")
-            self.conn.execute("VACUUM")
+            
+            # Skip VACUUM for in-memory databases
+            if self.db_path != ":memory:":
+                self.conn.execute("PRAGMA optimize")
+                self.conn.execute("ANALYZE")
+                self.conn.execute("VACUUM")
+            else:
+                # Just run basic optimizations for in-memory
+                self.conn.execute("PRAGMA optimize")
+                self.conn.execute("ANALYZE")
+            
             logger.info("Database optimizations complete")
         except Exception as e:
             logger.error(f"Failed to optimize database: {e}")
@@ -411,18 +413,8 @@ class DatabaseManager:
             except Exception as e:
                 logger.error(f"Error closing database: {e}")
 
-    def store_summary(self, summary: ScreenSummary):
-        """Store a summary in the database and return its ID
-        
-        This method handles the complete storage of a screen summary, including:
-        - The main activity snapshot
-        - Focus state information
-        - Environmental details
-        - Activity details
-        - Task segment updates
-        
-        All operations are performed in a single transaction for consistency.
-        """
+    def store_summary(self, summary: ScreenSummary) -> int:
+        """Store a screen summary in the database"""
         try:
             self.conn.execute("BEGIN TRANSACTION")
             try:
@@ -439,8 +431,8 @@ class DatabaseManager:
                 ])
                 snapshot_id = cursor.fetchone()[0]
 
-                # 2. Store focus state if available
-                if summary.context and summary.context.attention_state:
+                # 2. Insert focus state
+                if summary.context:
                     self.conn.execute("""
                         INSERT INTO focus_states (
                             snapshot_id, state_type, confidence
@@ -451,48 +443,37 @@ class DatabaseManager:
                         summary.context.confidence
                     ])
 
-                # 3. Store environment details
-                if summary.context and summary.context.environment:
-                    # Environment is stored as a string in the model
-                    env_data = json.loads(summary.context.environment)
+                # 3. Insert environment details
+                if summary.context:
+                    # Store environment as a string, not trying to parse as JSON
                     self.conn.execute("""
                         INSERT INTO environments (
-                            snapshot_id, window_count, tab_count, 
-                            active_displays, noise_level, interruption_probability
+                            snapshot_id, environment
+                        ) VALUES (?, ?)
+                    """, [
+                        snapshot_id,
+                        summary.context.environment
+                    ])
+
+                # 4. Insert activities
+                for activity in summary.activities:
+                    self.conn.execute("""
+                        INSERT INTO activities (
+                            snapshot_id,
+                            activity_type,
+                            category,
+                            attention_level,
+                            context_switches,
+                            workspace_organization
                         ) VALUES (?, ?, ?, ?, ?, ?)
                     """, [
                         snapshot_id,
-                        env_data.get('window_count', 0),
-                        env_data.get('tab_count', 0),
-                        env_data.get('active_displays', 1),
-                        env_data.get('noise_level', 'medium'),
-                        env_data.get('interruption_probability', 0.5)
+                        activity.name,
+                        activity.category,
+                        activity.focus_indicators.attention_level,
+                        activity.focus_indicators.context_switches,
+                        activity.focus_indicators.workspace_organization
                     ])
-
-                # 4. Update task segments and store activities
-                if summary.context and summary.context.primary_task:
-                    task_segment_id = self._update_task_segments(summary)
-                    
-                    # Store activities with reference to task segment
-                    if summary.activities:
-                        for activity in summary.activities:
-                            self.conn.execute("""
-                                INSERT INTO activities (
-                                    snapshot_id, task_segment_id, activity_type,
-                                    category, attention_level, context_switches,
-                                    workspace_organization, start_time, duration
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, [
-                                snapshot_id,
-                                task_segment_id,
-                                activity.name,  # Using name as activity_type
-                                activity.category,
-                                float(activity.focus_indicators.attention_level) / 100.0,
-                                activity.focus_indicators.context_switches,
-                                activity.focus_indicators.workspace_organization,
-                                summary.timestamp,  # Using summary timestamp
-                                None  # Duration not in model
-                            ])
 
                 self.conn.commit()
                 return snapshot_id
@@ -502,7 +483,7 @@ class DatabaseManager:
                 raise e
 
         except Exception as e:
-            logger.error(f"Failed to store summary: {str(e)}")
+            logger.error(f"Failed to store summary: {e}")
             raise
 
     def _calculate_focus_score(self, summary: ScreenSummary) -> float:
