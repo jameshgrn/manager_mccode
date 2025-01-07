@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application settings with validation"""
     
     # API Configuration
-    GEMINI_API_KEY: str
+    GEMINI_API_KEY: Optional[str] = None
     GEMINI_MODEL_NAME: str = "gemini-1.5-flash"
     
     # Service Configuration
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
     TEMP_DIR: Path = BASE_DIR / "temp_screenshots"
     LOG_DIR: Path = BASE_DIR / "logs"
+    DEFAULT_DB_PATH: Path = BASE_DIR / "manager_mccode.db"
     
     # Web Configuration
     WEB_PORT: int = 8000
