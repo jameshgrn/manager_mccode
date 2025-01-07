@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timedelta
 from manager_mccode.services.database import DatabaseManager, DatabaseError
-from manager_mccode.models.screen_summary import ScreenSummary
+from manager_mccode.models.screen_summary import ScreenSummary, Activity, FocusIndicators, Context
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,11 @@ def test_store_and_retrieve_summary(db, sample_summary):
 def test_cleanup_old_data(db, sample_summary):
     """Test cleaning up old data"""
     # Store some old and new summaries
-    old_summary = sample_summary.copy()
+    old_summary = sample_summary.model_copy()
     old_summary.timestamp = datetime.now() - timedelta(days=40)
     db.store_summary(old_summary)
     
-    new_summary = sample_summary.copy()
+    new_summary = sample_summary.model_copy()
     db.store_summary(new_summary)
     
     # Clean up old data
