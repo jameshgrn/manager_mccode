@@ -235,13 +235,17 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
+            # Drop existing tables if they exist
+            cursor.execute("DROP TABLE IF EXISTS activities")
+            cursor.execute("DROP TABLE IF EXISTS focus_states")
+            cursor.execute("DROP TABLE IF EXISTS activity_snapshots")
+            
             # Create activity_snapshots table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS activity_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME NOT NULL,
                     summary TEXT,
-                    primary_task TEXT,
                     focus_score REAL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -261,23 +265,22 @@ class DatabaseManager:
                 )
             """)
             
+            # Create focus_states table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS focus_states (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id INTEGER,
+                    state_type TEXT NOT NULL,
+                    confidence REAL,
+                    FOREIGN KEY (snapshot_id) REFERENCES activity_snapshots(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Create indexes
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
-                ON activity_snapshots(timestamp)
-            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON activity_snapshots(timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_snapshot ON activities(snapshot_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_focus_states_snapshot ON focus_states(snapshot_id)")
             
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_activities_snapshot 
-                ON activities(snapshot_id)
-            """)
-            
-            # Add any missing columns (for backward compatibility)
-            try:
-                cursor.execute("ALTER TABLE activity_snapshots ADD COLUMN focus_score REAL")
-            except:
-                pass  # Column already exists
-                
             conn.commit()
             logger.info("Database initialization complete")
             
@@ -697,8 +700,8 @@ class DatabaseManager:
                 SELECT 
                     s.id,
                     CASE 
-                        WHEN AVG(a.attention_level) >= 75 THEN 'focused'
-                        WHEN AVG(a.attention_level) <= 40 OR COUNT(CASE WHEN a.context_switches = 'high' THEN 1 END) >= 2 THEN 'scattered'
+                        WHEN AVG(a.attention_level) >= 70 THEN 'focused'
+                        WHEN AVG(a.attention_level) <= 45 THEN 'scattered'
                         ELSE 'neutral'
                     END as state_type,
                     AVG(a.attention_level) as confidence
@@ -714,48 +717,3 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting focus states: {e}")
             raise DatabaseError(f"Failed to get focus states: {e}") 
-
-    def add_sample_data(self):
-        """Add sample data for testing"""
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            # Add sample snapshots
-            now = datetime.now()
-            for hour in range(9, 18):  # 9 AM to 6 PM
-                timestamp = now.replace(hour=hour, minute=0, second=0)
-                
-                # Insert snapshot
-                cursor.execute("""
-                    INSERT INTO activity_snapshots 
-                    (timestamp, summary, focus_score)
-                    VALUES (?, ?, ?)
-                """, (
-                    timestamp,
-                    f"Working on project at {hour}:00",
-                    80 if 10 <= hour <= 15 else 60
-                ))
-                
-                snapshot_id = cursor.lastrowid
-                
-                # Insert activities
-                activities = [
-                    ("vscode", "development", 85, "low", "organized"),
-                    ("chrome", "research", 70, "medium", "neutral"),
-                    ("slack", "communication", 50, "high", "scattered")
-                ]
-                
-                for activity in activities:
-                    cursor.execute("""
-                        INSERT INTO activities 
-                        (snapshot_id, name, category, attention_level, context_switches, workspace_organization)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (snapshot_id, *activity))
-            
-            conn.commit()
-            logger.info("Sample data added successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to add sample data: {e}")
-            raise DatabaseError(f"Failed to add sample data: {e}") 

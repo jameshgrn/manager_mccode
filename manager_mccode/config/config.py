@@ -78,6 +78,40 @@ class Config(BaseSettings):
         description="Directory for temporary screenshot storage"
     )
     
+    # Service settings
+    service_name: str = Field(
+        default="manager-mccode",
+        description="Name of the system service"
+    )
+    log_file: Path = Field(
+        default=Path("logs/manager_mccode.log"),
+        description="Path to log file"
+    )
+    pid_file: Path = Field(
+        default=Path("/tmp/manager_mccode.pid"),
+        description="Path to PID file"
+    )
+    
+    # Service runtime settings
+    screenshot_interval: int = Field(
+        default=10,
+        ge=5,
+        le=300,
+        description="Interval between screenshots in seconds"
+    )
+    
+    max_errors: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum number of errors before service shutdown"
+    )
+    
+    error_reset_interval: int = Field(
+        default=300,
+        ge=60,
+        description="Interval in seconds to reset error count"
+    )
+    
     def initialize(self) -> None:
         """Initialize configuration and create required directories"""
         try:
@@ -94,6 +128,18 @@ class Config(BaseSettings):
     def get_path(self, *parts: str) -> Path:
         """Get a path relative to workspace root"""
         return self.workspace_root.joinpath(*parts)
+
+    def get_service_config(self) -> Dict[str, Any]:
+        """Get service configuration for system installation"""
+        return {
+            "name": self.service_name,
+            "working_directory": str(self.workspace_root),
+            "log_file": str(self.log_file),
+            "pid_file": str(self.pid_file),
+            "environment": {
+                "PYTHONPATH": str(self.workspace_root)
+            }
+        }
 
 # Global configuration instance
 config = Config() 

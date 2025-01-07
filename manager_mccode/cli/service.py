@@ -14,9 +14,14 @@ import logging
 import asyncio
 import uvicorn
 from manager_mccode.config.settings import Settings
+from manager_mccode.config.config import config
+import signal
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# Initialize console
+console = Console()
 
 @click.group()
 def cli():
@@ -83,39 +88,50 @@ def install():
 
 @cli.command()
 def start():
-    """Start the Manager McCode service"""
+    """Start Manager McCode as a background service"""
     try:
-        if sys.platform == 'darwin':
-            subprocess.run(['launchctl', 'start', 'com.jake.manager-mccode'])
-        elif sys.platform.startswith('linux'):
-            subprocess.run(['systemctl', 'start', f'manager-mccode@{os.getenv("USER")}'])
-        click.echo("Service started!")
+        from manager_mccode.services.runner import run_service
+        console.print("[yellow]Starting Manager McCode service...[/yellow]")
+        run_service()
     except Exception as e:
-        logging.error(f"Failed to start service: {e}")
+        logger.error(f"Failed to start service: {e}")
+        console.print(f"[red]Failed to start service: {e}[/red]")
         sys.exit(1)
 
 @cli.command()
 def stop():
     """Stop the Manager McCode service"""
     try:
-        if sys.platform == 'darwin':
-            subprocess.run(['launchctl', 'stop', 'com.jake.manager-mccode'])
-        elif sys.platform.startswith('linux'):
-            subprocess.run(['systemctl', 'stop', f'manager-mccode@{os.getenv("USER")}'])
-        if os.path.exists("manager_mccode.db"):
-            os.remove("manager_mccode.db")
-        click.echo("Service stopped!")
+        pid_file = config.pid_file
+        if pid_file.exists():
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            console.print("[green]Service stopped successfully[/green]")
+        else:
+            console.print("[yellow]Service is not running[/yellow]")
     except Exception as e:
-        logging.error(f"Failed to stop service: {e}")
+        logger.error(f"Failed to stop service: {e}")
         sys.exit(1)
 
 @cli.command()
 def status():
-    """Check the status of Manager McCode service"""
-    if sys.platform == 'darwin':
-        subprocess.run(['launchctl', 'list', 'com.jake.manager-mccode'])
-    elif sys.platform.startswith('linux'):
-        subprocess.run(['systemctl', 'status', f'manager-mccode@{os.getenv("USER")}'])
+    """Check service status"""
+    try:
+        pid_file = config.pid_file
+        if not pid_file.exists():
+            console.print("[yellow]Service is not running[/yellow]")
+            return
+        
+        pid = int(pid_file.read_text().strip())
+        try:
+            os.kill(pid, 0)  # Check if process exists
+            console.print(f"[green]Service is running (PID: {pid})[/green]")
+        except ProcessLookupError:
+            console.print("[red]Service crashed or was killed[/red]")
+            pid_file.unlink()
+    except Exception as e:
+        logger.error(f"Failed to check service status: {e}")
+        sys.exit(1)
 
 @cli.command()
 def inspect():
@@ -320,6 +336,57 @@ def optimize():
         console.print("[green]Database optimization complete[/green]")
     except Exception as e:
         logger.error(f"Optimization failed: {e}")
+        sys.exit(1)
+
+@db.command()
+def clear():
+    """Clear all data from the database"""
+    try:
+        db = DatabaseManager()
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Disable foreign key checks temporarily
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        
+        # Delete data from all tables
+        for (table_name,) in tables:
+            if table_name != 'sqlite_sequence':  # Skip SQLite internal table
+                cursor.execute(f"DELETE FROM {table_name}")
+        
+        cursor.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+        
+        click.echo("Database cleared successfully")
+    except Exception as e:
+        click.echo(f"Error clearing database: {e}", err=True)
+        sys.exit(1)
+
+@db.command()
+def info():
+    """Show database information"""
+    try:
+        db = DatabaseManager()
+        stats = db.get_database_stats()
+        
+        console = Console()
+        console.print("\n[bold]Database Statistics[/bold]")
+        
+        if stats['time_range']['total_records'] > 0:
+            console.print(f"\nTotal Records: {stats['time_range']['total_records']}")
+            console.print(f"Earliest Record: {stats['time_range']['earliest_record']}")
+            console.print(f"Latest Record: {stats['time_range']['latest_record']}")
+        else:
+            console.print("\n[yellow]No records found in database[/yellow]")
+            
+        console.print(f"\nDatabase Size: {stats['database_size_mb']:.2f}MB")
+        
+    except Exception as e:
+        click.echo(f"Error getting database info: {e}", err=True)
         sys.exit(1)
 
 @cli.command()
