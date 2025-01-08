@@ -711,52 +711,75 @@ class DatabaseManager:
             raise DatabaseError(f"Failed to get focus metrics: {e}") 
 
     def get_snapshots_between(self, start: datetime, end: datetime) -> List[Dict]:
-        """Get all snapshots between two timestamps"""
+        """Get snapshots between two timestamps"""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT 
-                    s.id,
-                    datetime(s.timestamp) as timestamp,  -- Ensure proper datetime format
-                    s.summary,
-                    s.focus_score,
-                    GROUP_CONCAT(a.name) as activities,
-                    GROUP_CONCAT(a.category) as categories
-                FROM activity_snapshots s
-                LEFT JOIN activities a ON s.id = a.snapshot_id
-                WHERE s.timestamp BETWEEN ? AND ?
-                GROUP BY s.id
-                ORDER BY s.timestamp DESC
-            """, (start, end))
-            
-            columns = [description[0] for description in cursor.description]
-            snapshots = []
-            
-            for row in cursor.fetchall():
-                snapshot = dict(zip(columns, row))
-                # Convert timestamp string to datetime
-                snapshot['timestamp'] = datetime.fromisoformat(snapshot['timestamp'].replace(' ', 'T'))
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        id,
+                        timestamp,
+                        summary,
+                        window_title,
+                        active_app,
+                        COALESCE(focus_score, 0.0) as focus_score,
+                        batch_id
+                    FROM activity_snapshots 
+                    WHERE timestamp BETWEEN ? AND ?
+                    ORDER BY timestamp DESC
+                """, [start.strftime('%Y-%m-%d %H:%M:%S'), 
+                     end.strftime('%Y-%m-%d %H:%M:%S')])
                 
-                # Convert activities and categories strings to lists
-                if snapshot.get('activities'):
-                    snapshot['activities'] = snapshot['activities'].split(',')
-                else:
-                    snapshot['activities'] = []
+                snapshots = []
+                for row in cursor.fetchall():
+                    snapshot = {
+                        "id": row[0],
+                        "timestamp": datetime.fromisoformat(row[1].replace(' ', 'T')),
+                        "summary": row[2],
+                        "window_title": row[3] or "",
+                        "active_app": row[4] or "",
+                        "focus_score": float(row[5]),  # Ensure float
+                        "batch_id": row[6],
+                        "activities": []  # Initialize empty activities list
+                    }
                     
-                if snapshot.get('categories'):
-                    snapshot['categories'] = snapshot['categories'].split(',')
-                else:
-                    snapshot['categories'] = []
+                    # Get associated activities
+                    cursor.execute("""
+                        SELECT 
+                            name,
+                            category,
+                            purpose,
+                            COALESCE(attention_level, 0.0) as attention_level,
+                            COALESCE(context_switches, 'low') as context_switches,
+                            COALESCE(workspace_organization, 'neutral') as workspace_organization
+                        FROM activities
+                        WHERE snapshot_id = ?
+                    """, [row[0]])
                     
-                snapshots.append(snapshot)
+                    activities = []
+                    for activity_row in cursor.fetchall():
+                        activity = {
+                            "name": activity_row[0] or "unknown",
+                            "category": activity_row[1] or "unknown",
+                            "purpose": activity_row[2] or "",
+                            "attention_level": float(activity_row[3]),
+                            "context_switches": activity_row[4],
+                            "workspace_organization": activity_row[5]
+                        }
+                        activities.append(activity)
+                    
+                    snapshot["activities"] = activities
+                    snapshots.append(snapshot)
                 
-            return snapshots
+                return snapshots
+                
+            finally:
+                conn.close()
                 
         except Exception as e:
             logger.error(f"Error getting snapshots: {e}")
-            raise DatabaseError(f"Failed to get snapshots: {e}")
+            return []
 
     def get_activities_between(self, start: datetime, end: datetime) -> List[Dict]:
         """Get all activities between two timestamps"""
