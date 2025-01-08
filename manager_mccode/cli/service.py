@@ -110,15 +110,20 @@ def start(debug):
 def stop():
     """Stop the Manager McCode service"""
     try:
-        pid_file = settings.DATA_DIR / "manager_mccode.pid"
-        if pid_file.exists():
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, signal.SIGTERM)
-            console.print("[green]Service stopped successfully[/green]")
-        else:
-            console.print("[yellow]Service is not running[/yellow]")
+        if sys.platform == 'darwin':
+            subprocess.run(['launchctl', 'stop', 'com.jake.manager-mccode'])
+        elif sys.platform.startswith('linux'):
+            subprocess.run(['systemctl', 'stop', f'manager-mccode@{os.getenv("USER")}'])
+            
+        # Clean up only temporary files
+        temp_dir = Path(settings.TEMP_DIR)
+        if temp_dir.exists():
+            for file in temp_dir.glob("*.png"):
+                file.unlink()
+            
+        click.echo("Service stopped!")
     except Exception as e:
-        logger.error(f"Failed to stop service: {e}")
+        logging.error(f"Failed to stop service: {e}")
         sys.exit(1)
 
 @cli.command()

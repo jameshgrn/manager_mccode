@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     SCREENSHOT_INTERVAL_SECONDS: int = 10
     DEFAULT_BATCH_SIZE: int = 12
     DEFAULT_BATCH_INTERVAL_SECONDS: int = 120
+    CLEANUP_INTERVAL_MINUTES: int = 60  # Run cleanup hourly instead of every 10 seconds
     
     # Path Configuration
     BASE_DIR: Path = Path(__file__).parent.parent.parent

@@ -119,6 +119,9 @@ class ServiceRunner:
         # Initialize batch processor
         await self.batch_processor.initialize()
         
+        # Start periodic cleanup task
+        cleanup_task = asyncio.create_task(self.run_periodic_cleanup())
+        
         try:
             while self.running:
                 try:
@@ -137,10 +140,6 @@ class ServiceRunner:
                                 await asyncio.to_thread(self.db.store_summaries, summaries)
                             except Exception as e:
                                 logger.error(f"Failed to store summaries: {e}")
-                                # Don't increment error count for storage failures
-                    
-                    # Periodic cleanup
-                    await self._maybe_cleanup()
                     
                     # Reset error count on successful iteration
                     self.error_count = 0
@@ -165,25 +164,23 @@ class ServiceRunner:
                         await self.shutdown()
                         break
                     
-                    # Brief pause before retry
                     await asyncio.sleep(1)
             
         finally:
+            cleanup_task.cancel()  # Cancel the periodic cleanup task
             if self.running:  # If we didn't already shutdown
                 await self.shutdown()
     
-    async def _maybe_cleanup(self) -> None:
+    async def run_periodic_cleanup(self):
         """Run periodic cleanup tasks"""
-        try:
-            logger.info("Running periodic cleanup...")
-            await self.db.cleanup_old_data()
-            
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-            self.error_count += 1
-            if self.error_count >= self.MAX_ERRORS:
-                logger.critical("Too many errors, initiating shutdown...")
-                await self.shutdown()
+        while self.running:
+            try:
+                logger.debug("Running periodic cleanup...")
+                await self.db.cleanup_old_data()
+                await asyncio.sleep(settings.CLEANUP_INTERVAL_MINUTES * 60)
+            except Exception as e:
+                logger.error(f"Error in cleanup: {e}")
+                await asyncio.sleep(5)
 
 class ServiceInitError(RunnerError):
     """Exception raised when service initialization fails"""
